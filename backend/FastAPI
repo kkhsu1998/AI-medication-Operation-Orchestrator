@@ -1,0 +1,503 @@
+"""
+FastAPI routes for MedOps Orchestrator API
+
+This file defines the API surface that the React frontend depends on.
+Implement these routes by integrating with your orchestrator modules from:
+  - foundation branch: decision functions, models, config
+  - platform branch: orchestrator, agents, database
+
+Usage:
+  from fastapi import FastAPI
+  from api_routes import setup_routes
+  
+  app = FastAPI()
+  setup_routes(app)
+"""
+
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
+from uuid import UUID, uuid4
+from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Request/Response Models (matching OpenAPI spec)
+# ============================================================================
+
+class HealthResponse(BaseModel):
+    status: str = "ok"
+    database: str = "connected"
+    timestamp: datetime
+
+
+class ProblemType(str, Enum):
+    shortage = "shortage"
+    excess = "excess"
+    expiration = "expiration"
+    supplier_delay = "supplier_delay"
+
+
+class Scenario(BaseModel):
+    id: int
+    tag: str
+    drug: str
+    narrative: str
+    approver_role: str
+    correlation_id: str
+
+
+class ScenarioDetail(Scenario):
+    current_workflow_id: Optional[UUID] = None
+    current_stage: Optional[str] = None
+
+
+class RunScenarioRequest(BaseModel):
+    override_config: Optional[Dict[str, Any]] = None
+
+
+class RunScenarioResponse(BaseModel):
+    workflow_id: UUID
+    correlation_id: str
+    status: str
+    started_at: datetime
+
+
+class WorkflowStage(str, Enum):
+    detected = "detected"
+    agents_consulted = "agents_consulted"
+    options_ranked = "options_ranked"
+    pending_approval = "pending_approval"
+    approved = "approved"
+    task_created = "task_created"
+    in_progress = "in_progress"
+    completed = "completed"
+    rejected = "rejected"
+    escalated = "escalated"
+
+
+class RankedOption(BaseModel):
+    option_id: str  # "transfer" or "procurement"
+    label: str
+    feasible: bool
+    score: Optional[int] = None  # 0-100, None if not feasible
+    availability_protection: Optional[float] = None  # 0.0-1.0
+    lead_time_margin_days: Optional[int] = None
+    cost_usd: Optional[float] = None
+    waste_avoided_units: Optional[int] = None
+    agent_responsible: str
+
+
+class RejectedOption(BaseModel):
+    option_id: str
+    label: str
+    reason: str  # Human-readable feasibility rejection reason
+
+
+class Recommendation(BaseModel):
+    recommendation_id: UUID
+    version: int
+    drug: str
+    problem_type: ProblemType
+    ranked_options: List[RankedOption]
+    rejected_options: List[RejectedOption]
+    scoring_weights: Dict[str, float]
+    input_snapshot: Dict[str, Any]  # Inventory/supplier state at decision time
+    policy_version: str
+    generated_at: datetime
+
+
+class ApprovalDecision(BaseModel):
+    decision_id: UUID
+    workflow_id: UUID
+    recommendation_id: UUID
+    recommendation_version: int
+    approver_role: str
+    approver_id: Optional[str] = None
+    decision: str  # approved, rejected, escalated
+    reason: Optional[str] = None  # Required for reject
+    policy_version: str
+    decided_at: datetime
+
+
+class WorkflowState(BaseModel):
+    workflow_id: UUID
+    correlation_id: str
+    drug: str
+    stage: WorkflowStage
+    version: int
+    detected_at: datetime
+    options_ranked_at: Optional[datetime] = None
+    pending_approval_at: Optional[datetime] = None
+    approved_at: Optional[datetime] = None
+    
+    recommendation: Optional[Recommendation] = None  # Only if stage >= options_ranked
+    approval_decision: Optional[ApprovalDecision] = None  # Only if decided
+    task_id: Optional[UUID] = None  # Only if task_created or later
+
+
+class ApproveRequest(BaseModel):
+    approver_role: str  # Manager, Pharmacist, Clinician
+    approver_id: Optional[str] = None
+
+
+class ApproveResponse(BaseModel):
+    workflow_id: UUID
+    status: str
+    task_id: Optional[UUID] = None
+    task_status: Optional[str] = None
+    timestamp: datetime
+
+
+class RejectRequest(BaseModel):
+    approver_role: str
+    approver_id: Optional[str] = None
+    reason: str  # Must match enum in spec
+
+
+class RejectResponse(BaseModel):
+    workflow_id: UUID
+    status: str  # rejected, pending_approval (if recalc), or escalated
+    rejection_count: int
+    next_version: Optional[int] = None  # If recalculation triggered
+    timestamp: datetime
+
+
+class EscalateRequest(BaseModel):
+    reason: str
+
+
+class EscalateResponse(BaseModel):
+    workflow_id: UUID
+    status: str
+    timestamp: datetime
+
+
+class TaskStatus(str, Enum):
+    requested = "requested"
+    assigned = "assigned"
+    accepted = "accepted"
+    in_progress = "in_progress"
+    delayed = "delayed"
+    completed = "completed"
+    failed = "failed"
+    escalated = "escalated"
+
+
+class Task(BaseModel):
+    task_id: UUID
+    correlation_id: str  # Idempotency key
+    workflow_id: UUID
+    drug: str
+    task_type: str  # transfer or procurement
+    status: TaskStatus
+    
+    source_location: Optional[str] = None
+    destination_location: Optional[str] = None
+    quantity: int
+    estimated_delivery_hours: Optional[int] = None
+    
+    supplier_name: Optional[str] = None
+    estimated_arrival_date: Optional[datetime] = None
+    
+    steps_completed: List[str] = []
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class ReassignRequest(BaseModel):
+    pass  # No body needed; backend picks next available courier
+
+
+class ReassignResponse(BaseModel):
+    task_id: UUID
+    status: TaskStatus
+    timestamp: datetime
+
+
+class LatencyMetrics(BaseModel):
+    median: float
+    p95: float
+
+
+class KPIs(BaseModel):
+    timestamp: datetime
+    time_window_days: int
+    
+    problems_detected: int
+    recommendations_generated: int
+    recommendation_acceptance_rate_pct: float
+    false_positive_rate_pct: float
+    
+    latency_detection_to_recommendation_sec: LatencyMetrics
+    latency_recommendation_to_approval_sec: LatencyMetrics
+    latency_approval_to_task_creation_sec: float
+    latency_task_completion_sec: LatencyMetrics
+    
+    task_completion_rate_pct: float
+    manual_coordination_steps_avoided: int
+    estimated_operations_minutes_saved: float
+    
+    medication_availability_rate_pct: float
+    potential_stockouts_addressed: int
+    simulated_stockouts_prevented: int
+    expiration_risk_quantity_redistributed: int
+    transfer_vs_procurement_ratio: float
+    invalid_recommendations_blocked: int
+
+
+class Config(BaseModel):
+    safety_stock_multiplier: float
+    days_of_supply_minimum: int
+    expiration_risk_horizon_days: int
+    lead_time_buffer_days: int
+    scoring_weights: Dict[str, float]
+    minimum_feasibility_score: int
+    retry_limit_delivery: int
+    minutes_per_manual_coordination_step: int
+    updated_at: datetime
+
+
+# ============================================================================
+# API Routes
+# ============================================================================
+
+def setup_routes(app: FastAPI, orchestrator, db_session=Depends(lambda: None)):
+    """
+    Setup all API routes.
+    
+    Args:
+        app: FastAPI application instance
+        orchestrator: Your orchestrator instance (from platform branch)
+        db_session: Database session dependency (from foundation branch)
+    """
+
+    # ========== System ==========
+    
+    @app.get("/health", response_model=HealthResponse)
+    async def health_check():
+        """Health check endpoint."""
+        # TODO: Check database connection
+        return HealthResponse(
+            status="ok",
+            database="connected",
+            timestamp=datetime.utcnow()
+        )
+
+    # ========== Scenarios ==========
+    
+    @app.get("/api/v1/scenarios", response_model=List[Scenario])
+    async def list_scenarios():
+        """List all demo scenarios."""
+        # TODO: Query database for scenario definitions
+        # For now, return hardcoded scenarios from spec
+        scenarios = [
+            Scenario(
+                id=1,
+                tag="Prevent shortage through internal transfer",
+                drug="Vancomycin IV 1g",
+                narrative="Ward A has low inventory, Central Warehouse has excess, supplier arrival is after stockout.",
+                approver_role="Manager",
+                correlation_id="corr-88213-A"
+            ),
+            # ... add the other 4 scenarios
+        ]
+        return scenarios
+
+    @app.get("/api/v1/scenarios/{scenario_id}", response_model=ScenarioDetail)
+    async def get_scenario(scenario_id: int):
+        """Get scenario detail with current workflow state."""
+        # TODO: Query database for scenario + current workflow
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    @app.post("/api/v1/scenarios/{scenario_id}/run", response_model=RunScenarioResponse)
+    async def run_scenario(scenario_id: int, request: RunScenarioRequest, background_tasks: BackgroundTasks):
+        """
+        Trigger a scenario's detection event.
+        
+        Flow:
+        1. Create a new Workflow record with stage='detected'
+        2. Schedule orchestrator.process_detected_event() in background
+        3. Return immediately with workflow_id
+        """
+        # TODO: Implement
+        # 1. Load scenario from database
+        # 2. Create Workflow(stage='detected', correlation_id=scenario.correlation_id)
+        # 3. Save to database
+        # 4. Schedule: background_tasks.add_task(orchestrator.process_detected_event, workflow)
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    # ========== Workflows ==========
+    
+    @app.get("/api/v1/workflows/{workflow_id}", response_model=WorkflowState)
+    async def get_workflow(workflow_id: UUID):
+        """
+        Get workflow state and recommendation.
+        
+        Returns full WorkflowState including:
+        - Current stage
+        - Ranked options (if stage >= options_ranked)
+        - Approval decision (if decided)
+        - Task ID (if task_created or later)
+        """
+        # TODO: Implement
+        # 1. Query Workflow from database by workflow_id
+        # 2. If stage >= options_ranked, load Recommendation from database
+        # 3. If decided, load ApprovalDecision from database
+        # 4. If task_created+, load Task.task_id
+        # 5. Return complete WorkflowState
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    @app.post("/api/v1/workflows/{workflow_id}/approve", response_model=ApproveResponse)
+    async def approve_recommendation(workflow_id: UUID, request: ApproveRequest):
+        """
+        Approve a recommendation.
+        
+        Flow:
+        1. Validate workflow is in pending_approval stage
+        2. Create ApprovalDecision record (approved)
+        3. Transition workflow to approved → task_created
+        4. Create Task from top-ranked option
+        5. Return task_id
+        """
+        # TODO: Implement
+        # 1. Query Workflow from database
+        # 2. Verify stage == 'pending_approval'
+        # 3. Create ApprovalDecision with decision='approved'
+        # 4. Update Workflow.stage = 'approved'
+        # 5. Call orchestrator.create_task(workflow, top_option)
+        # 6. Update Workflow.stage = 'task_created'
+        # 7. Return ApproveResponse with task_id
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    @app.post("/api/v1/workflows/{workflow_id}/reject", response_model=RejectResponse)
+    async def reject_recommendation(workflow_id: UUID, request: RejectRequest):
+        """
+        Reject a recommendation.
+        
+        Flow:
+        1. Validate workflow is in pending_approval
+        2. Create ApprovalDecision with decision='rejected' and reason
+        3. If rejection_count < 2, transition to 'rejected' → recalculate → 'pending_approval' (new version)
+        4. If rejection_count >= 2, transition to 'escalated'
+        """
+        # TODO: Implement
+        # 1. Query Workflow
+        # 2. Verify stage == 'pending_approval'
+        # 3. Create ApprovalDecision(decision='rejected', reason=request.reason)
+        # 4. Increment rejection_count
+        # 5. If rejection_count < 2:
+        #      a. Increment version
+        #      b. Create new Recommendation (re-call orchestrator.rank_options)
+        #      c. Update Workflow.stage = 'pending_approval'
+        #      d. Return status='pending_approval', next_version=new_version
+        # 6. Else:
+        #      a. Update Workflow.stage = 'escalated'
+        #      b. Return status='escalated'
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    @app.post("/api/v1/workflows/{workflow_id}/escalate", response_model=EscalateResponse)
+    async def escalate_workflow(workflow_id: UUID, request: EscalateRequest):
+        """Manually escalate a workflow."""
+        # TODO: Implement
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    # ========== Tasks ==========
+    
+    @app.get("/api/v1/tasks/{task_id}", response_model=Task)
+    async def get_task(task_id: UUID):
+        """Get task status and details."""
+        # TODO: Query Task from database
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    @app.post("/api/v1/tasks/{task_id}/reassign", response_model=ReassignResponse)
+    async def reassign_task(task_id: UUID):
+        """
+        Reassign a failed task to a different courier.
+        
+        Flow:
+        1. Query Task by task_id
+        2. Verify status == 'failed' or 'escalated'
+        3. Reset Task.status = 'requested'
+        4. Reset Task.steps_completed = []
+        5. Schedule delivery simulation to pick next courier
+        """
+        # TODO: Implement
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    # ========== KPI ==========
+    
+    @app.get("/api/v1/kpi", response_model=KPIs)
+    async def get_kpis(time_window_days: int = 1):
+        """
+        Get all operational KPIs.
+        
+        Calculated from structured event logs:
+        - WorkflowDetected, WorkflowStateChanged, ApprovalDecision, TaskCreated, TaskCompleted
+        """
+        # TODO: Implement KPICalculator
+        # 1. Query all events in time_window_days
+        # 2. Calculate all 17 KPIs from spec
+        # 3. Return KPIs object
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    # ========== Audit Trail ==========
+    
+    @app.get("/api/v1/audit", response_model=Dict[str, Any])
+    async def get_audit_trail(limit: int = 50, offset: int = 0):
+        """Get approval audit trail."""
+        # TODO: Query ApprovalDecision from database, paginated
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    # ========== Configuration ==========
+    
+    @app.get("/api/v1/config", response_model=Config)
+    async def get_config():
+        """Get current configuration."""
+        # TODO: Query configuration from database (configuration store)
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+    @app.patch("/api/v1/config", response_model=Config)
+    async def update_config(request: Dict[str, Any]):
+        """Update configuration (admin only)."""
+        # TODO: Implement
+        # 1. Validate admin role (or API key)
+        # 2. Update configuration table in database
+        # 3. Invalidate any caches
+        # 4. Return updated Config
+        raise HTTPException(status_code=501, detail="Not implemented")
+
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+if __name__ == "__main__":
+    from fastapi.middleware.cors import CORSMiddleware
+    
+    app = FastAPI(
+        title="MedOps Orchestrator API",
+        version="1.0.0",
+        description="AI-driven pharmaceutical supply chain operations platform"
+    )
+    
+    # Enable CORS for React frontend
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://localhost:8080"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # TODO: Initialize orchestrator and database session
+    orchestrator = None  # Your orchestrator instance
+    
+    setup_routes(app, orchestrator)
+    
+    # Run: uvicorn api_routes:app --reload --port 8000
