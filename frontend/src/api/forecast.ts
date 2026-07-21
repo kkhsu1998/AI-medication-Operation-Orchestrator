@@ -79,6 +79,17 @@ export interface TrainResult {
   history: { date: string; value: number }[]
   predictions: { date: string; value: number }[]
 }
+export interface SampleData {
+  columns: string[]
+  rows: { date: string; location: string; quantity: number }[]
+}
+export const getSample = (drug: string) =>
+  cached(`forecast:sample:${drug}`, async () => {
+    const res = await fetch(`${BASE}/api/v1/forecast/sample?drug=${encodeURIComponent(drug)}`)
+    if (!res.ok) throw new Error(`sample failed: ${res.status}`)
+    return res.json() as Promise<SampleData>
+  })
+
 export async function trainForecast(
   drug: string, steps: number, model: string, normalization: string, features: FeatureSpec[],
 ): Promise<TrainResult> {

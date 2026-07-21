@@ -21,8 +21,9 @@ import { TrendingUp, RotateCcw, Plus, X } from 'lucide-react'
 import DataGrid from '../components/DataGrid/DataGrid'
 import type { GridColumn, Row } from '../components/DataGrid/xlsx'
 import {
-  getItem, getOverview, predictSeries, getFeatureOptions, trainForecast,
+  getItem, getOverview, predictSeries, getFeatureOptions, getSample, trainForecast,
   type ForecastOverview, type ModelType, type FeatureOptions, type FeatureSpec, type TrainResult,
+  type SampleData,
 } from '../api/forecast'
 import { C } from '../theme'
 
@@ -54,13 +55,55 @@ const MODEL_LABEL: Record<string, string> = {
 
 type Mode = 'predict' | 'lattice'
 
-// Non-lag features; lags are a single contiguous range "Lag N-1 … N-n" (see lagN).
-const DEFAULT_LATTICE: FeatureSpec[] = [
-  { type: 'calendar', kind: 'dow' },
-  { type: 'categorical', column: 'location', encoder: 'onehot' },
+interface Point { date: string; value: number }
+
+// ---- Feature Lattice: column model ----
+// Each grid column IS a data field / feature. Clicking its header configures it.
+type ColRole = 'time' | 'target' | 'categorical' | 'lag' | 'calendar' | 'derived'
+interface FeatureCol {
+  key: string          // unique grid/scope key (date, location, quantity, lag_range, cal_dow, d_1 …)
+  name: string         // header label
+  role: ColRole
+  include: boolean     // excluded columns still preview but are dimmed + omitted from training
+  encoder?: string     // categorical
+  lagN?: number        // lag range → expands to lag_1 … lag_n
+  kind?: string        // calendar: dow | month | day
+  formula?: string     // derived: JS expression over other column keys
+}
+
+const SAMPLE_KINDS = ['dow', 'month', 'day']
+
+const seedColumns = (): FeatureCol[] => [
+  { key: 'date', name: 'Date', role: 'time', include: true },
+  { key: 'location', name: 'Location', role: 'categorical', include: true, encoder: 'onehot' },
+  { key: 'quantity', name: 'Quantity', role: 'target', include: true },
+  { key: 'lag_range', name: 'Lag N-1 … N-7', role: 'lag', include: true, lagN: 7 },
+  { key: 'cal_dow', name: 'Calendar · dow', role: 'calendar', include: true, kind: 'dow' },
 ]
 
-interface Point { date: string; value: number }
+// Calendar feature value for a date (dow 0..6 / month 1..12 / day 1..31).
+const calValue = (iso: string, kind: string): number => {
+  const dt = new Date(iso + 'T00:00:00Z')
+  if (kind === 'month') return dt.getUTCMonth() + 1
+  if (kind === 'day') return dt.getUTCDate()
+  return dt.getUTCDay()
+}
+
+// Guarded formula eval over a numeric scope (blank on any error).
+const evalFormula = (formula: string, scope: Record<string, number>): number | undefined => {
+  if (!formula.trim()) return undefined
+  try {
+    const keys = Object.keys(scope)
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function(...keys, `"use strict"; return (${formula});`)
+    const v = fn(...keys.map((k) => scope[k]))
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const round2 = (v: number) => Math.round(v * 100) / 100
 
 export default function Forecast() {
   const [overview, setOverview] = useState<ForecastOverview | null>(null)
@@ -78,13 +121,12 @@ export default function Forecast() {
   const [mode, setMode] = useState<Mode>('predict')
   const [options, setOptions] = useState<FeatureOptions | null>(null)
   const [normalization, setNormalization] = useState('standard')
-  const [featureSpecs, setFeatureSpecs] = useState<FeatureSpec[]>(DEFAULT_LATTICE)
   const [trained, setTrained] = useState<TrainResult | null>(null)
-  // lag range "Lag N-1 … N-n" (expands to lags 1..n) + add-feature control inputs
-  const [lagN, setLagN] = useState(7)
-  const [newCalendar, setNewCalendar] = useState('')
-  const [derivedName, setDerivedName] = useState('')
-  const [derivedFormula, setDerivedFormula] = useState('')
+  // The Excel grid IS the feature editor: columns are the fields/features.
+  const [sample, setSample] = useState<SampleData['rows']>([])
+  const [featureCols, setFeatureCols] = useState<FeatureCol[]>(seedColumns)
+  const [activeCol, setActiveCol] = useState<string | null>(null)
+  const colSeq = useRef(0)
 
   const splitRef = useRef<HTMLDivElement>(null)
 
@@ -114,7 +156,6 @@ export default function Forecast() {
     getFeatureOptions()
       .then((o) => {
         setOptions(o)
-        setNewCalendar(o.calendar[0] ?? '')
         if (o.normalizers.length && !o.normalizers.includes(normalization)) setNormalization(o.normalizers[0])
       })
       .catch(() => { /* options are optional; lattice mode will show a hint */ })
@@ -133,6 +174,14 @@ export default function Forecast() {
       .then((it) => { setBase(it.days.map((d, i) => ({ date: d, value: it.values[i] }))); setError(null) })
       .catch(() => setError(`Could not load history for ${selected}`))
   }, [selected, isAll, overview])
+
+  // Base panel rows for the feature-lattice grid (one drug, recent ~200 rows).
+  useEffect(() => {
+    if (mode !== 'lattice' || isAll || !selected) return
+    getSample(selected)
+      .then((s) => { setSample(s.rows); setError(null) })
+      .catch(() => setError(`Could not load sample rows for ${selected}`))
+  }, [mode, selected, isAll])
 
   const grouped = useMemo(() => {
     const g: Record<string, string[]> = {}
@@ -158,10 +207,28 @@ export default function Forecast() {
     if (isAll) return
     setBusy(true)
     setError(null)
-    // Expand the lag range N-1 … N-n into individual lag features 1..n.
-    const lagFeatures: FeatureSpec[] = Array.from({ length: Math.max(0, lagN) }, (_, i) => ({ type: 'lag', lag: i + 1 }))
-    const features = [...lagFeatures, ...featureSpecs]
-    trainForecast(selected, steps, model, normalization, features)
+    // Build FeatureSpec[] from the INCLUDED columns of the grid.
+    const specs: FeatureSpec[] = []
+    for (const c of featureCols) {
+      if (!c.include) continue
+      switch (c.role) {
+        case 'lag':
+          for (let k = 1; k <= Math.max(1, c.lagN ?? 1); k++) specs.push({ type: 'lag', lag: k })
+          break
+        case 'calendar':
+          specs.push({ type: 'calendar', kind: c.kind ?? 'dow' })
+          break
+        case 'categorical':
+          specs.push({ type: 'categorical', column: 'location', encoder: c.encoder ?? 'onehot' })
+          break
+        case 'derived':
+          if (c.formula?.trim()) specs.push({ type: 'derived', name: c.name, formula: c.formula.trim() })
+          break
+        default:
+          break // time / target aren't features
+      }
+    }
+    trainForecast(selected, steps, model, normalization, specs)
       .then((res) => { setTrained(res); setError(null) })
       .catch((e) => { setTrained(null); setError(`Train failed: ${e instanceof Error ? e.message : String(e)}`) })
       .finally(() => setBusy(false))
@@ -180,18 +247,101 @@ export default function Forecast() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode])
 
-  const addFeature = (f: FeatureSpec) => setFeatureSpecs((prev) => [...prev, f])
-  const removeFeature = (i: number) => setFeatureSpecs((prev) => prev.filter((_, idx) => idx !== i))
+  // ---- Feature-column editing ----
+  const patchCol = (key: string, patch: Partial<FeatureCol>) =>
+    setFeatureCols((prev) => prev.map((c) => (c.key === key ? { ...c, ...patch } : c)))
+  const removeCol = (key: string) =>
+    setFeatureCols((prev) => prev.filter((c) => c.key !== key))
+  const nextKey = (prefix: string) => `${prefix}_${(colSeq.current += 1)}`
 
-  const featureLabel = (f: FeatureSpec): { type: string; params: string } => {
-    switch (f.type) {
-      case 'lag': return { type: 'lag', params: `lag_${f.lag}` }
-      case 'calendar': return { type: 'calendar', params: `cal_${f.kind}` }
-      case 'categorical': return { type: 'categorical', params: `${f.column} · ${f.encoder}` }
-      case 'derived': return { type: 'derived', params: `${f.name} = ${f.formula}` }
-      default: return { type: f.type, params: '' }
-    }
+  const addLagCol = () => {
+    const key = nextKey('lag')
+    setFeatureCols((prev) => [...prev, { key, name: 'Lag N-1 … N-7', role: 'lag', include: true, lagN: 7 }])
+    setActiveCol(key)
   }
+  const addCalendarCol = (kind: string) => {
+    const key = nextKey('cal')
+    setFeatureCols((prev) => [...prev, { key, name: `Calendar · ${kind}`, role: 'calendar', include: true, kind }])
+    setActiveCol(key)
+  }
+  const addDerivedCol = () => {
+    const key = nextKey('d')
+    setFeatureCols((prev) => [...prev, { key, name: 'derived', role: 'derived', include: true, formula: '' }])
+    setActiveCol(key)
+  }
+
+  // ---- Grid preview (client-side feature computation over base panel rows) ----
+  // Sort by location then date so lags stay within a series.
+  const sortedSample = useMemo(() => {
+    return [...sample].sort((a, b) =>
+      a.location < b.location ? -1 : a.location > b.location ? 1 : (a.date < b.date ? -1 : 1))
+  }, [sample])
+
+  const latticeColumns: GridColumn[] = useMemo(
+    () => featureCols.map((c) => ({
+      key: c.key,
+      // Excluded columns are marked with a leading "· " and read as dimmed.
+      name: (c.include ? '' : '· ') + c.name,
+      width: c.role === 'time' ? 118 : c.role === 'derived' ? 150 : 120,
+      editable: false,
+    })),
+    [featureCols],
+  )
+
+  const latticeRows: Row[] = useMemo(() => {
+    const PREVIEW = 60
+    const N = Math.min(PREVIEW, sortedSample.length)
+    const maxLag = Math.max(1, ...featureCols.filter((c) => c.role === 'lag').map((c) => c.lagN ?? 1))
+    const hist: Record<string, number[]> = {} // per-location running quantities
+    const out: Row[] = []
+    for (let i = 0; i < sortedSample.length; i++) {
+      const r = sortedSample[i]
+      const prior = (hist[r.location] ||= [])
+      if (i < N) {
+        // Scope available to derived formulas: quantity, lag_k, cal_<kind>.
+        const scope: Record<string, number> = { quantity: r.quantity }
+        for (let k = 1; k <= maxLag; k++) {
+          const v = prior[prior.length - k]
+          if (v !== undefined) scope[`lag_${k}`] = v
+        }
+        for (const c of featureCols) {
+          if (c.role === 'calendar') scope[`cal_${c.kind ?? 'dow'}`] = calValue(r.date, c.kind ?? 'dow')
+        }
+        const gridRow: Row = {}
+        for (const c of featureCols) {
+          switch (c.role) {
+            case 'time': gridRow[c.key] = r.date; break
+            case 'target': gridRow[c.key] = r.quantity; break
+            case 'categorical': gridRow[c.key] = r.location; break
+            case 'lag': {
+              const v = prior[prior.length - 1] // range column previews lag_1
+              gridRow[c.key] = v === undefined ? '' : v
+              break
+            }
+            case 'calendar': gridRow[c.key] = calValue(r.date, c.kind ?? 'dow'); break
+            case 'derived': {
+              const v = evalFormula(c.formula ?? '', scope)
+              if (v !== undefined) { scope[c.key] = v; gridRow[c.key] = round2(v) }
+              else gridRow[c.key] = ''
+              break
+            }
+          }
+        }
+        out.push(gridRow)
+      }
+      prior.push(r.quantity)
+    }
+    return out
+  }, [sortedSample, featureCols])
+
+  const emptyLatticeRow = useCallback(
+    (): Row => Object.fromEntries(featureCols.map((c) => [c.key, ''])),
+    [featureCols],
+  )
+
+  const activeColumn = featureCols.find((c) => c.key === activeCol) ?? null
+  const locEncoders = options?.categoricals?.find((c) => c.column === 'location')?.encoders ?? ['onehot', 'ordinal']
+  const calendarKinds = options?.calendar ?? SAMPLE_KINDS
 
   // ---- Table pane data (Predict mode) ----
   const columns: GridColumn[] = [
@@ -398,97 +548,113 @@ export default function Forecast() {
                 minRows={Math.max(rows.length, 6)}
                 rowClass={(r) => (r.kind === 'forecast' ? 'rdg-forecast' : undefined)}
               />
+            ) : isAll ? (
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, color: C.muted2, fontSize: 12.5, textAlign: 'center', padding: 24 }}>
+                Pick a single medication in the left rail to open its feature grid.
+              </div>
             ) : (
-              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden' }}>
-                {/* Table header */}
-                <div style={{ display: 'grid', gridTemplateColumns: '92px 1fr 26px', background: C.panelAlt, borderBottom: `1px solid ${C.border}`, padding: '8px 10px' }} className="mono">
-                  <span style={{ fontSize: 9.5, color: C.muted2 }}>TYPE</span>
-                  <span style={{ fontSize: 9.5, color: C.muted2 }}>FEATURE — {1 + featureSpecs.length} rows</span>
-                  <span />
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Grid toolbar — column adders + hint */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, padding: '7px 10px' }}>
+                  <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>COLUMNS = FEATURES · click a header (▾) to configure</span>
+                  <div style={{ flex: 1 }} />
+                  <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>+ ADD</span>
+                  <button onClick={addLagCol} style={smallBtn()}><Plus size={12} /> lag</button>
+                  <button onClick={() => addCalendarCol(calendarKinds[0] ?? 'dow')} style={smallBtn()}><Plus size={12} /> calendar</button>
+                  <button onClick={addDerivedCol} style={smallBtn()}><Plus size={12} /> derived</button>
                 </div>
 
-                {/* Feature rows (the lattice as a table) */}
-                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-                  {/* Lag range row: Lag N-1 … N-n */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '92px 1fr 26px', alignItems: 'center', padding: '7px 10px', borderBottom: `1px solid ${C.border}` }}>
-                    <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>LAG</span>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, flexWrap: 'wrap' }}>
-                      <span className="mono" style={{ color: C.text }}>Lag&nbsp;N-1&nbsp;…&nbsp;N-</span>
-                      <input type="number" min={1} max={90} value={lagN}
-                        onChange={(e) => setLagN(Math.max(1, Math.min(90, Number(e.target.value) || 1)))}
-                        style={{ ...selStyle, width: 54 }} />
-                      <span className="mono" style={{ color: C.muted2, fontSize: 10.5 }}>→ lag_1 … lag_{lagN}</span>
-                    </span>
-                    <span />
-                  </div>
+                {/* Config strip for the active column */}
+                {activeColumn && (
+                  <div style={{ background: C.panelAlt, border: `1px solid ${C.teal}66`, borderRadius: 8, padding: '9px 11px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span className="mono" style={{ fontSize: 9.5, color: C.teal }}>{activeColumn.role.toUpperCase()} · {activeColumn.name}</span>
+                    <div style={{ width: 1, height: 20, background: C.border }} />
 
-                  {featureSpecs.map((f, i) => {
-                    const fl = featureLabel(f)
-                    return (
-                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '92px 1fr 26px', alignItems: 'center', padding: '7px 10px', borderBottom: `1px solid ${C.border}` }}>
-                        <span className="mono" style={{ fontSize: 9.5, color: C.muted2, textTransform: 'uppercase' }}>{fl.type}</span>
-                        <span className="mono" style={{ fontSize: 12.5, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fl.params}</span>
-                        <button onClick={() => removeFeature(i)} title="Remove" style={{ background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', display: 'inline-flex', padding: 2 }}><X size={13} /></button>
-                      </div>
-                    )
-                  })}
-                </div>
+                    {activeColumn.role === 'target' && (
+                      <span style={{ fontSize: 12, color: C.muted }}>Target — the value being predicted.</span>
+                    )}
 
-                {/* Add-feature footer — controls live inside the table */}
-                <div style={{ borderTop: `1px solid ${C.border}`, background: C.panelAlt, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>ADD FEATURE</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <select value={newCalendar} onChange={(e) => setNewCalendar(e.target.value)} style={{ ...selStyle, minWidth: 78 }}>
-                      {(options?.calendar ?? ['dow', 'month', 'day']).map((k) => <option key={k} value={k}>cal_{k}</option>)}
-                    </select>
-                    <button onClick={() => newCalendar && addFeature({ type: 'calendar', kind: newCalendar })} style={smallBtn()}><Plus size={12} /> calendar</button>
-                    {(options?.categoricals ?? [{ column: 'location', encoders: ['onehot', 'ordinal'] }]).map((cat) => (
-                      <CategoricalAdder key={cat.column} column={cat.column} encoders={cat.encoders} selStyle={selStyle} smallBtn={smallBtn} onAdd={addFeature} />
-                    ))}
+                    {activeColumn.role === 'time' && (
+                      <>
+                        <span style={{ fontSize: 12, color: C.muted }}>Time — add a calendar feature:</span>
+                        {calendarKinds.map((k) => (
+                          <button key={k} onClick={() => addCalendarCol(k)} style={smallBtn()}><Plus size={12} /> cal_{k}</button>
+                        ))}
+                      </>
+                    )}
+
+                    {activeColumn.role === 'categorical' && (
+                      <>
+                        <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>ENCODER</span>
+                        <select value={activeColumn.encoder ?? 'onehot'} onChange={(e) => patchCol(activeColumn.key, { encoder: e.target.value })} style={selStyle}>
+                          {locEncoders.map((enc) => <option key={enc} value={enc}>{enc}</option>)}
+                        </select>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.text }}>
+                          <input type="checkbox" checked={activeColumn.include} onChange={(e) => patchCol(activeColumn.key, { include: e.target.checked })} /> Include
+                        </label>
+                      </>
+                    )}
+
+                    {activeColumn.role === 'lag' && (
+                      <>
+                        <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>N-1 … N-</span>
+                        <input type="number" min={1} max={90} value={activeColumn.lagN ?? 7}
+                          onChange={(e) => patchCol(activeColumn.key, { lagN: Math.max(1, Math.min(90, Number(e.target.value) || 1)), name: `Lag N-1 … N-${Math.max(1, Math.min(90, Number(e.target.value) || 1))}` })}
+                          style={{ ...selStyle, width: 60 }} />
+                        <span className="mono" style={{ fontSize: 10.5, color: C.muted2 }}>→ lag_1 … lag_{activeColumn.lagN ?? 7}</span>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.text }}>
+                          <input type="checkbox" checked={activeColumn.include} onChange={(e) => patchCol(activeColumn.key, { include: e.target.checked })} /> Include
+                        </label>
+                      </>
+                    )}
+
+                    {activeColumn.role === 'calendar' && (
+                      <>
+                        <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>KIND</span>
+                        <select value={activeColumn.kind ?? 'dow'} onChange={(e) => patchCol(activeColumn.key, { kind: e.target.value, name: `Calendar · ${e.target.value}` })} style={selStyle}>
+                          {calendarKinds.map((k) => <option key={k} value={k}>{k}</option>)}
+                        </select>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.text }}>
+                          <input type="checkbox" checked={activeColumn.include} onChange={(e) => patchCol(activeColumn.key, { include: e.target.checked })} /> Include
+                        </label>
+                        <button onClick={() => { removeCol(activeColumn.key); setActiveCol(null) }} style={smallBtn({ color: C.red })}><X size={12} /> Remove</button>
+                      </>
+                    )}
+
+                    {activeColumn.role === 'derived' && (
+                      <>
+                        <input placeholder="name" value={activeColumn.name} onChange={(e) => patchCol(activeColumn.key, { name: e.target.value })} style={{ ...selStyle, width: 110 }} />
+                        <input placeholder="lag_1 * 0.5 + lag_7" value={activeColumn.formula ?? ''} onChange={(e) => patchCol(activeColumn.key, { formula: e.target.value })} style={{ ...selStyle, minWidth: 170, flex: 1 }} />
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.text }}>
+                          <input type="checkbox" checked={activeColumn.include} onChange={(e) => patchCol(activeColumn.key, { include: e.target.checked })} /> Include
+                        </label>
+                        <button onClick={() => { removeCol(activeColumn.key); setActiveCol(null) }} style={smallBtn({ color: C.red })}><X size={12} /> Remove</button>
+                      </>
+                    )}
+
+                    <div style={{ flex: 1 }} />
+                    <button onClick={() => setActiveCol(null)} title="Close" style={{ background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', display: 'inline-flex', padding: 2 }}><X size={14} /></button>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <input placeholder="derived name" value={derivedName} onChange={(e) => setDerivedName(e.target.value)} style={{ ...selStyle, width: 104 }} />
-                    <input placeholder="lag_1 * 0.5 + lag_7" value={derivedFormula} onChange={(e) => setDerivedFormula(e.target.value)} style={{ ...selStyle, flex: 1, minWidth: 130 }} />
-                    <button
-                      onClick={() => {
-                        if (!derivedName.trim() || !derivedFormula.trim()) return
-                        addFeature({ type: 'derived', name: derivedName.trim(), formula: derivedFormula.trim() })
-                        setDerivedName(''); setDerivedFormula('')
-                      }}
-                      style={smallBtn()}
-                    ><Plus size={12} /> derived</button>
-                  </div>
-                  <div className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>Formulas reference feature columns (lag_1, lag_7, cal_dow, …).</div>
+                )}
+
+                {/* The Excel grid IS the feature editor */}
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <DataGrid
+                    key={selected}
+                    columns={latticeColumns}
+                    rows={latticeRows}
+                    onRowsChange={() => {}}
+                    name={`lattice-${selected.split(' ')[0].toLowerCase()}`}
+                    emptyRow={emptyLatticeRow}
+                    minRows={Math.max(latticeRows.length, 12)}
+                    onHeaderClick={(colKey) => setActiveCol((k) => (k === colKey ? null : colKey))}
+                  />
                 </div>
               </div>
             )}
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-// --- Categorical add-row (one encoder dropdown per categorical column) ---
-function CategoricalAdder({
-  column, encoders, selStyle, smallBtn, onAdd,
-}: {
-  column: string
-  encoders: string[]
-  selStyle: React.CSSProperties
-  smallBtn: (extra?: React.CSSProperties) => React.CSSProperties
-  onAdd: (f: FeatureSpec) => void
-}) {
-  const [encoder, setEncoder] = useState(encoders[0] ?? 'onehot')
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-      <span style={{ fontSize: 11.5, color: C.muted, width: 74 }}>{column}</span>
-      <select value={encoder} onChange={(e) => setEncoder(e.target.value)} style={{ ...selStyle, minWidth: 90 }}>
-        {encoders.map((enc) => <option key={enc} value={enc}>{enc}</option>)}
-      </select>
-      <button onClick={() => onAdd({ type: 'categorical', column, encoder })} style={smallBtn()}>
-        <Plus size={12} /> {column}
-      </button>
     </div>
   )
 }

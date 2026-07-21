@@ -134,3 +134,20 @@ def train(body: TrainIn, session: Session = Depends(get_session)) -> dict:
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/api/v1/forecast/sample")
+def sample(drug: str = Query(...), limit: int = Query(200, le=1000), session: Session = Depends(get_session)) -> dict:
+    """Recent rows of the (date, location, quantity) panel for a drug — the raw
+    data the feature-lattice table is built from (column headers are the fields)."""
+    rows = (
+        session.query(Consumption.day, Consumption.location, Consumption.quantity)
+        .filter(Consumption.drug == drug)
+        .order_by(Consumption.day.desc())
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"no consumption history for {drug!r}")
+    items = [{"date": d.isoformat(), "location": loc, "quantity": round(float(q), 1)} for d, loc, q in reversed(rows)]
+    return {"columns": ["date", "location", "quantity"], "rows": items}
