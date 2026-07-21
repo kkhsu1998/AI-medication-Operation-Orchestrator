@@ -48,6 +48,7 @@ interface FeatureCol {
   role: ColRole
   include: boolean
   encoder?: string
+  nDims?: number      // embedding dimensionality
   lagN?: number
   kind?: string
   formula?: string
@@ -195,7 +196,12 @@ export default function Forecast() {
       switch (c.role) {
         case 'lag': for (let k = 1; k <= Math.max(1, c.lagN ?? 1); k++) specs.push({ type: 'lag', lag: k }); break
         case 'calendar': specs.push({ type: 'calendar', kind: c.kind ?? 'dow' }); break
-        case 'categorical': specs.push({ type: 'categorical', column: 'location', encoder: c.encoder ?? 'onehot' }); break
+        case 'categorical':
+          specs.push({
+            type: 'categorical', column: 'location', encoder: c.encoder ?? 'onehot',
+            n_dims: c.encoder === 'embedding' ? Math.max(1, Math.min(32, c.nDims ?? 4)) : undefined,
+          })
+          break
         case 'derived': if (c.formula?.trim()) specs.push({ type: 'derived', name: c.name, formula: c.formula.trim() }); break
         default: break
       }
@@ -424,6 +430,15 @@ export default function Forecast() {
                         <select value={activeColumn.encoder ?? 'onehot'} onChange={(e) => patchCol(activeColumn.key, { encoder: e.target.value })} style={selStyle}>
                           {locEncoders.map((enc) => <option key={enc} value={enc}>{enc}</option>)}
                         </select>
+                        {activeColumn.encoder === 'embedding' && (
+                          <>
+                            <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>N_DIMS</span>
+                            <input type="number" min={1} max={32} value={activeColumn.nDims ?? 4}
+                              onChange={(e) => patchCol(activeColumn.key, { nDims: Math.max(1, Math.min(32, Number(e.target.value) || 1)) })}
+                              style={{ ...selStyle, width: 58 }} />
+                            <span className="mono" style={{ fontSize: 10.5, color: C.muted2 }}>→ loc_emb_0 … loc_emb_{(activeColumn.nDims ?? 4) - 1}</span>
+                          </>
+                        )}
                         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.text }}>
                           <input type="checkbox" checked={activeColumn.include} onChange={(e) => patchCol(activeColumn.key, { include: e.target.checked })} /> Include
                         </label>

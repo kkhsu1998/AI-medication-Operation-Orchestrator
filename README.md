@@ -1,71 +1,122 @@
-# AI-Driven Medication Operations and Task Management Platform
+# MedOps Orchestrator
 
-Prototype system for detecting medication shortages, excess inventory,
-expiration risk, supplier shortages, and replenishment delays; ranking
-operational responses (transfer preferred over procurement); and requiring
-human approval before any task executes.
+**AI-driven medication operations and task management platform** — detects
+medication shortages, excess inventory, expiration risk, and supplier issues;
+forecasts demand with configurable ML models; ranks operational responses
+(transfer preferred over procurement); and requires **human approval before any
+task executes**.
 
-This is a prototype. It is not a production medical device and not an
-autonomous purchasing system. All data is synthetic; no PHI.
+> Prototype only. Not a production medical device, not an autonomous purchasing
+> system. All data is synthetic; no PHI.
 
-## What's here
+## Screens
 
-- **Stock** — Excel-like inventory worksheet (paginated at 100K rows,
-  import/export .xlsx, paste from Excel, per-row saves to SQL, right-click
-  per-drug summaries). Stored relationally; an HL7 FHIR `InventoryItem`
-  Bundle view is generated on demand (`/api/v1/fhir/InventoryItem`).
-- **Forecast** — daily demand (2 years of history) with a configurable
-  feature grid: columns are the features; click a header to set a
-  categorical encoder (one-hot/ordinal), a lag range (N-1…N-n), a calendar
-  kind, or a derived formula column. Predict trains XGBoost / Random Forest
-  (with normalization) and draws history (white) + forecast (red).
-- **Orchestrator** — detected issues (stockout / shortage / expiring /
-  overstock) with ranked transfer-vs-procurement options and one-click
-  human approve/reject → task + audit.
-- **Dashboard** — live KPIs from inventory + consumption (SQL-side, fast).
-- **Audit** — every consequential action with a YYYYMMDDHHMMSS change-point
-  stamp (who, when, what, why).
-- **Settings** — operational thresholds and scoring weights (persisted,
-  audited, drive detection).
-- **MCP server** (`backend/mcp_server.py`, registered in `.mcp.json`) —
-  lets an agent drive the system: `query`, `store_stock`, `forecast`,
-  `cash_out`. Every mutating action records a change point.
+### Stock — Excel-like inventory at 100K rows
+Paginated worksheet backed by SQL: import/export `.xlsx`, paste blocks straight
+from Excel, per-row saves, and right-click per-drug summaries. Stored
+relationally with an HL7 FHIR `InventoryItem` view (`/api/v1/fhir/InventoryItem`).
 
-## Running
+![Stock](docs/screenshots/stock.png)
 
-Backend (auto-creates tables and seeds 100K inventory + 100K consumption
-rows when empty; SQLite by default, set `DATABASE_URL` for Postgres):
+### Forecast — configurable feature grid + ML models
+Two years of daily consumption history. The right-hand table **is the feature
+editor**: columns are the features — click a header (▾) to set a categorical
+encoder (one-hot / ordinal / **embedding with n_dims**), a lag range
+(N-1…N-n), a calendar kind, or a derived formula column. Predict runs
+**XGBoost / Random Forest** (multivariate, with normalization) or
+**ARIMA / Moving Average** (univariate) and draws history (white) vs forecast
+(red).
 
-    cd backend
-    pip install -e '.[dev]'
-    uvicorn app.main:app --reload      # http://localhost:8000 (docs at /docs)
-    pytest                             # test suite
+![Forecast](docs/screenshots/forecast.png)
 
-Frontend (npm workspaces — run from the repo root):
+### Orchestrator — detect → rank → human approval
+Detected issues (stockout / shortage / expiring / overstock) with ranked
+transfer-vs-procurement options and one-click approve/reject. Approval creates
+a task; every decision is audited.
 
-    npm install
-    npm run dev                        # http://localhost:5173, proxies /api → :8000
+![Orchestrator](docs/screenshots/orchestrator.png)
 
-Docker (full stack: Postgres + backend + frontend + Adminer):
+### Dashboard & Audit
+Live KPIs computed SQL-side from inventory + consumption; an immutable audit
+trail where every consequential action carries a `YYYYMMDDHHMMSS` change-point
+stamp (who, when, what, why). Operational thresholds live in **Settings** and
+directly drive detection.
 
-    docker compose up --build          # frontend :3000, API :8000, Adminer :8080
+![Dashboard](docs/screenshots/dashboard.png)
+![Audit](docs/screenshots/audit.png)
 
-Seed sizes are env-tunable: `MEDOPS_AUTOSEED`, `MEDOPS_SEED_INVENTORY`,
-`MEDOPS_SEED_CONSUMPTION`. Regenerate manually with
-`python data/synthetic/generate_hl7_inventory.py [N]` and
-`python data/synthetic/generate_consumption.py [N]`.
+## Quick start
 
-## Layout
+**Backend** — FastAPI; auto-creates tables and seeds 100K inventory +
+100K consumption rows when empty (SQLite by default, `DATABASE_URL` for
+Postgres):
 
-- `backend/app/` — FastAPI app: `stock/` (relational inventory + FHIR view),
-  `consumption/` (daily series), `forecasting/` (univariate + multivariate
-  feature-lattice models), `orchestration/`, `audit/`, `settings/`,
-  `dashboard/`, `analytics.py`, `seed.py`, `db.py`, `main.py`.
-- `backend/mcp_server.py` — MCP tools over the REST API.
-- `frontend/` — React + TypeScript + Vite (screens, Excel-like DataGrid,
-  API clients, module-level cache).
-- `data/synthetic/` — deterministic synthetic data generators.
-- `docs/adr/` — architecture decision records; `docs/schema.sql` — the
-  fuller target schema.
+```bash
+cd backend
+pip install -e '.[dev]'
+uvicorn app.main:app --reload   # http://localhost:8000 · docs at /docs
+pytest                          # 186 tests
+```
 
-See `docs/adr/` for architecture decisions.
+**Frontend** — React + TypeScript + Vite (npm workspaces, run from repo root):
+
+```bash
+npm install
+npm run dev                     # http://localhost:5173 · proxies /api → :8000
+```
+
+**Docker** — full stack (Postgres + backend + frontend + Adminer):
+
+```bash
+docker compose up --build       # frontend :3000 · API :8000 · Adminer :8080
+```
+
+Seed sizes are tunable via `MEDOPS_AUTOSEED`, `MEDOPS_SEED_INVENTORY`,
+`MEDOPS_SEED_CONSUMPTION`; regenerate manually with the scripts in
+`data/synthetic/`.
+
+## MCP server
+
+`backend/mcp_server.py` (registered in `.mcp.json`) exposes the platform to
+agents as MCP tools — `query`, `store_stock`, `forecast`, `cash_out`. Every
+mutating action records a timestamped change point in SQL, visible in the
+Audit tab.
+
+## Architecture
+
+```
+frontend/            React + TS + Vite — screens, Excel-like DataGrid,
+                     API clients, module-level cache, code-split bundle
+backend/app/
+  stock/             relational inventory + HL7 FHIR InventoryItem view
+  consumption/       daily demand series (2 years)
+  forecasting/       univariate (XGB/RF/ARIMA/MA) + multivariate feature
+                     lattice (encoders, normalization, derived columns)
+  orchestration/     issue detection → ranked options → decisions
+  audit/             change-point audit trail
+  settings/          persisted operational thresholds
+  dashboard/         SQL-side KPI aggregation
+  analytics.py       shared detection/aggregation logic
+  seed.py            auto-seed synthetic data on first start
+backend/mcp_server.py  MCP tools over the REST API
+data/synthetic/      deterministic generators (inventory, consumption)
+docs/adr/            architecture decision records
+```
+
+The full API surface is described in [`openapi.yaml`](openapi.yaml)
+(generated from the live app — 17 endpoints).
+
+## Testing
+
+```bash
+cd backend && pytest    # 186 tests: models, encoders, panels, API, FHIR round-trip
+npm run build           # typecheck + production build
+```
+
+## Contributors
+
+- [@kkhsu1998](https://github.com/kkhsu1998)
+- [@triadastra](https://github.com/triadastra)
+- [@Fancyhe1](https://github.com/Fancyhe1)
+
+Built with assistance from [Claude Code](https://claude.com/claude-code).

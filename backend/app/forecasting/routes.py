@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.consumption.models import Consumption
 from app.db import get_session
-from app.forecasting.lattice import NORMALIZERS, train_and_forecast
+from app.forecasting.lattice import ENCODERS, NORMALIZERS, train_and_forecast
 from app.forecasting.simple import predict_series
 
 router = APIRouter(tags=["forecasting"])
@@ -85,7 +85,8 @@ class FeatureSpecIn(BaseModel):
     lag: int | None = None          # lag
     kind: str | None = None         # calendar: dow | month | day
     column: str | None = None       # categorical column
-    encoder: str | None = None      # onehot | ordinal
+    encoder: str | None = None      # onehot | ordinal | embedding
+    n_dims: int | None = None       # embedding dimensionality (1..32)
     name: str | None = None         # derived column name
     formula: str | None = None      # derived formula
 
@@ -102,7 +103,8 @@ class TrainIn(BaseModel):
 def feature_options(session: Session = Depends(get_session)) -> dict:
     """Describe the features/encoders available to the workbench."""
     return {
-        "categoricals": [{"column": "location", "encoders": ["onehot", "ordinal"]}],
+        "categoricals": [{"column": "location", "encoders": list(ENCODERS)}],
+        "embedding_n_dims": {"min": 1, "max": 32, "default": 4},
         "calendar": ["dow", "month", "day"],
         "suggested_lags": [1, 2, 3, 7, 14, 28],
         "normalizers": list(NORMALIZERS),
