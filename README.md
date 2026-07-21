@@ -117,6 +117,5 @@ npm run build           # typecheck + production build
 
 - [@kkhsu1998](https://github.com/kkhsu1998)
 - [@triadastra](https://github.com/triadastra)
-- [@Fancyhe1](https://github.com/Fancyhe1)
 
 Built with assistance from [Claude Code](https://claude.com/claude-code).
