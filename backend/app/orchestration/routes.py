@@ -9,6 +9,7 @@ reject decision, and log every decision to the audit trail.
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -35,7 +36,7 @@ class Decision(BaseModel):
     drug: str = ""
     location: str = ""
     option_type: str = ""  # transfer | procurement
-    decision: str  # approved | rejected
+    decision: Literal["approved", "rejected"]  # anything else is a 422
     reason: str = ""
     approver_role: str = "Manager"
 

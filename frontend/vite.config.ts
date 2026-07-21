@@ -14,4 +14,18 @@ export default defineConfig({
       '/health': { target: API_TARGET, changeOrigin: true },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the heavy libraries into their own cacheable chunks so the
+        // app shell stays small and lib updates don't bust the whole bundle.
+        manualChunks: {
+          recharts: ['recharts'],
+          xlsx: ['xlsx'],
+          datagrid: ['react-data-grid'],
+          react: ['react', 'react-dom', 'react-router-dom'],
+        },
+      },
+    },
+  },
 })
