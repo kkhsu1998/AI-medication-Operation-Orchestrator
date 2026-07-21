@@ -45,16 +45,19 @@ def _seed_inventory(session: Session, n: int) -> None:
     objs = []
     for i in range(n):
         drug = f"{rng.choice(BASE_DRUGS)} {rng.choice(STRENGTHS)}"
+        # Expiries mostly ahead (30–540 days out) with a small already-expired
+        # tail (~5%), so expiration-risk counts look like a real pharmacy.
+        expiry_offset = rng.randint(-60, -1) if rng.random() < 0.05 else rng.randint(30, 540)
         objs.append(StockItem(
             position=i,
             drug=drug,
             location=rng.choice(LOCATIONS),
             on_hand=float(rng.randint(0, 5000)),
             unit=rng.choice(UNITS),
-            expiry_date=datetime(2026, rng.randint(1, 12), rng.randint(1, 28)).date(),
+            expiry_date=date.today() + timedelta(days=expiry_offset),
             avg_daily_use=float(rng.randint(1, 120)),
             supplier=rng.choice(SUPPLIERS),
-            last_delivery=f"2026-07-{rng.randint(1, 21):02d}",
+            last_delivery=(date.today() - timedelta(days=rng.randint(0, 20))).isoformat(),
         ))
     session.bulk_save_objects(objs)
     session.commit()

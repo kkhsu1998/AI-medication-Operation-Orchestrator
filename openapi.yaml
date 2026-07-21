@@ -1,887 +1,891 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
-  title: MedOps Orchestrator API
-  description: |
-    AI-driven medication operations platform with deterministic decision logic,
-    human-in-the-loop approval, and complete audit trail.
-    
-    All endpoints return ISO 8601 timestamps (UTC).
-    All monetary values in USD. All quantities in units.
-    All IDs are UUIDs v4 or correlation_ids (alphanumeric).
-  version: 1.0.0
-  contact:
-    name: MedOps Team
-servers:
-  - url: http://localhost:8000
-    description: Local development
-  - url: https://api.medops.example.com
-    description: Production
-
+  title: MedOps API
+  version: 0.1.0
 paths:
-  /health:
+  /api/v1/stock:
     get:
-      summary: Health check
-      operationId: health_check
       tags:
-        - System
+      - stock
+      summary: List Stock
+      operationId: list_stock_api_v1_stock_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 2000
+          default: 200
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      - name: drug
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Drug
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Q
       responses:
         '200':
-          description: System healthy
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [ok]
-                  database:
-                    type: string
-                    enum: [connected]
-                  timestamp:
-                    type: string
-                    format: date-time
-
-  /api/v1/scenarios:
-    get:
-      summary: List all demo scenarios
-      operationId: list_scenarios
-      tags:
-        - Scenarios
-      responses:
-        '200':
-          description: List of scenarios
+                additionalProperties: true
+                title: Response List Stock Api V1 Stock Get
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Scenario'
-
-  /api/v1/scenarios/{scenario_id}:
-    get:
-      summary: Get scenario detail
-      operationId: get_scenario
-      tags:
-        - Scenarios
-      parameters:
-        - name: scenario_id
-          in: path
-          required: true
-          schema:
-            type: integer
-            example: 1
-      responses:
-        '200':
-          description: Scenario detail with current workflow state
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ScenarioDetail'
-        '404':
-          description: Scenario not found
-
-  /api/v1/scenarios/{scenario_id}/run:
+                $ref: '#/components/schemas/HTTPValidationError'
     post:
-      summary: Trigger a scenario's detection event
-      operationId: run_scenario
       tags:
-        - Scenarios
-      parameters:
-        - name: scenario_id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - stock
+      summary: Add Stock
+      operationId: add_stock_api_v1_stock_post
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                override_config:
-                  type: object
-                  description: Optional config overrides for this run
-              example:
-                override_config:
-                  safety_stock_multiplier: 1.5
+              $ref: '#/components/schemas/StockRow'
       responses:
-        '202':
-          description: Scenario execution started
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  workflow_id:
-                    type: string
-                    format: uuid
-                  correlation_id:
-                    type: string
-                  status:
-                    type: string
-                    enum: [detected]
-                  started_at:
-                    type: string
-                    format: date-time
-
-  /api/v1/workflows/{workflow_id}:
-    get:
-      summary: Get workflow state and recommendation
-      operationId: get_workflow
-      tags:
-        - Workflows
-      parameters:
-        - name: workflow_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Workflow state with full context
+                additionalProperties: true
+                title: Response Add Stock Api V1 Stock Post
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WorkflowState'
-        '404':
-          description: Workflow not found
-
-  /api/v1/workflows/{workflow_id}/approve:
-    post:
-      summary: Approve a recommendation
-      operationId: approve_recommendation
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
       tags:
-        - Workflows
-      parameters:
-        - name: workflow_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - stock
+      summary: Replace Stock
+      description: Full replace — used on import. Heavy; prefer PATCH for single edits.
+      operationId: replace_stock_api_v1_stock_put
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                approver_role:
-                  type: string
-                  enum: [Manager, Pharmacist, Clinician]
-                approver_id:
-                  type: string
-                  description: Optional user ID / email
-                  example: alice@hospital.example.com
-              required:
-                - approver_role
+              $ref: '#/components/schemas/StockPut'
       responses:
         '200':
-          description: Recommendation approved, task created
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  workflow_id:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [approved, task_created]
-                  task_id:
-                    type: string
-                    format: uuid
-                  task_status:
-                    type: string
-                    enum: [requested, assigned, accepted, in_progress, completed, failed, escalated]
-                  timestamp:
-                    type: string
-                    format: date-time
-        '400':
-          description: Invalid approver_role or workflow not in pending_approval state
-        '409':
-          description: Workflow state conflict (e.g., already approved/rejected)
-
-  /api/v1/workflows/{workflow_id}/reject:
-    post:
-      summary: Reject a recommendation
-      operationId: reject_recommendation
+                additionalProperties: true
+                title: Response Replace Stock Api V1 Stock Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/stock/{item_id}:
+    patch:
       tags:
-        - Workflows
+      - stock
+      summary: Update Stock
+      operationId: update_stock_api_v1_stock__item_id__patch
       parameters:
-        - name: workflow_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                approver_role:
-                  type: string
-                  enum: [Manager, Pharmacist, Clinician]
-                approver_id:
-                  type: string
-                reason:
-                  type: string
-                  enum:
-                    - Insufficient lead-time margin
-                    - Cost exceeds budget threshold
-                    - Prefer alternate supplier
-                    - Clinical / operational override
-                    - Other — needs review
-              required:
-                - approver_role
-                - reason
+              $ref: '#/components/schemas/StockRowUpdate'
       responses:
         '200':
-          description: Recommendation rejected, recalculation triggered or escalated
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  workflow_id:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [rejected, pending_approval, escalated]
-                  rejection_count:
-                    type: integer
-                  next_version:
-                    type: integer
-                    description: New recommendation version if recalculation triggered
-                  timestamp:
-                    type: string
-                    format: date-time
-        '400':
-          description: Invalid reason or approver_role
-        '409':
-          description: Workflow not in pending_approval state
-
-  /api/v1/workflows/{workflow_id}/escalate:
-    post:
-      summary: Manually escalate a workflow (e.g., after delivery failure)
-      operationId: escalate_workflow
+                additionalProperties: true
+                title: Response Update Stock Api V1 Stock  Item Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
       tags:
-        - Workflows
+      - stock
+      summary: Delete Stock
+      operationId: delete_stock_api_v1_stock__item_id__delete
       parameters:
-        - name: workflow_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
+      - name: item_id
+        in: path
         required: true
+        schema:
+          type: integer
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Delete Stock Api V1 Stock  Item Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/stock/summary:
+    get:
+      tags:
+      - stock
+      summary: Stock Summary
+      operationId: stock_summary_api_v1_stock_summary_get
+      parameters:
+      - name: drug
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Drug
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Stock Summary Api V1 Stock Summary Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/fhir/InventoryItem:
+    get:
+      tags:
+      - stock
+      summary: Fhir Inventory
+      operationId: fhir_inventory_api_v1_fhir_InventoryItem_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 5000
+          default: 500
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Fhir Inventory Api V1 Fhir Inventoryitem Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/forecast/predict:
+    post:
+      tags:
+      - forecasting
+      summary: Predict
+      description: Forecast `steps` ahead from a raw numeric series using the chosen
+        model.
+      operationId: predict_api_v1_forecast_predict_post
+      requestBody:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                reason:
-                  type: string
-                  example: Courier unavailable mid-task
-              required:
-                - reason
+              $ref: '#/components/schemas/PredictIn'
+        required: true
       responses:
         '200':
-          description: Workflow escalated
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Predict Api V1 Forecast Predict Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/forecast/overview:
+    get:
+      tags:
+      - forecasting
+      summary: Overview
+      operationId: overview_api_v1_forecast_overview_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Overview Api V1 Forecast Overview Get
+  /api/v1/forecast/item:
+    get:
+      tags:
+      - forecasting
+      summary: Item
+      operationId: item_api_v1_forecast_item_get
+      parameters:
+      - name: drug
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Drug
+      responses:
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  workflow_id:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [escalated]
-                  timestamp:
-                    type: string
-                    format: date-time
-
-  /api/v1/tasks/{task_id}:
-    get:
-      summary: Get task status
-      operationId: get_task
-      tags:
-        - Tasks
-      parameters:
-        - name: task_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Task detail
+                additionalProperties: true
+                title: Response Item Api V1 Forecast Item Get
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Task'
-        '404':
-          description: Task not found
-
-  /api/v1/tasks/{task_id}/reassign:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/forecast/features:
+    get:
+      tags:
+      - forecasting
+      summary: Feature Options
+      description: Describe the features/encoders available to the workbench.
+      operationId: feature_options_api_v1_forecast_features_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Feature Options Api V1 Forecast Features Get
+  /api/v1/forecast/train:
     post:
-      summary: Reassign a failed task to a different courier/AMR
-      operationId: reassign_task
       tags:
-        - Tasks
-      parameters:
-        - name: task_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - forecasting
+      summary: Train
+      description: Train a multivariate model on the chosen feature lattice and forecast.
+      operationId: train_api_v1_forecast_train_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainIn'
+        required: true
       responses:
         '200':
-          description: Task reassigned
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Train Api V1 Forecast Train Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/forecast/sample:
+    get:
+      tags:
+      - forecasting
+      summary: Sample
+      description: 'Recent rows of the (date, location, quantity) panel for a drug
+        — the raw
+
+        data the feature-lattice table is built from (column headers are the fields).'
+      operationId: sample_api_v1_forecast_sample_get
+      parameters:
+      - name: drug
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Drug
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          default: 200
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  task_id:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [requested, assigned]
-                  timestamp:
-                    type: string
-                    format: date-time
-
-  /api/v1/kpi:
-    get:
-      summary: Get all operational KPIs
-      operationId: get_kpis
-      tags:
-        - KPI
-      parameters:
-        - name: time_window_days
-          in: query
-          schema:
-            type: integer
-            default: 1
-            description: Lookback window for aggregation (days)
-      responses:
-        '200':
-          description: All KPIs calculated from event log
+                additionalProperties: true
+                title: Response Sample Api V1 Forecast Sample Get
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KPIs'
-
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/dashboard:
+    get:
+      tags:
+      - dashboard
+      summary: Dashboard
+      operationId: dashboard_api_v1_dashboard_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Dashboard Api V1 Dashboard Get
+  /api/v1/orchestrator/issues:
+    get:
+      tags:
+      - orchestrator
+      summary: Issues
+      operationId: issues_api_v1_orchestrator_issues_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Issues Api V1 Orchestrator Issues Get
+  /api/v1/orchestrator/decision:
+    post:
+      tags:
+      - orchestrator
+      summary: Decide
+      operationId: decide_api_v1_orchestrator_decision_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Decision'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Decide Api V1 Orchestrator Decision Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/audit:
     get:
-      summary: Get approval audit trail
-      operationId: get_audit_trail
       tags:
-        - Audit
+      - audit
+      summary: List Audit
+      operationId: list_audit_api_v1_audit_get
       parameters:
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 50
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
       responses:
         '200':
-          description: List of approval decisions
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  total:
-                    type: integer
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ApprovalDecision'
-
-  /api/v1/config:
-    get:
-      summary: Get current configuration
-      operationId: get_config
-      tags:
-        - Configuration
-      responses:
-        '200':
-          description: Configuration values
+                additionalProperties: true
+                title: Response List Audit Api V1 Audit Get
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Config'
-    patch:
-      summary: Update configuration (admin only)
-      operationId: update_config
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/changepoints:
+    post:
       tags:
-        - Configuration
+      - audit
+      summary: Create Change Point
+      description: Record a change point (a timestamped history step). Returns its
+        change_id.
+      operationId: create_change_point_api_v1_changepoints_post
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                safety_stock_multiplier:
-                  type: number
-                expiration_risk_horizon_days:
-                  type: integer
-                minutes_per_manual_step:
-                  type: integer
+              $ref: '#/components/schemas/ChangePointIn'
       responses:
         '200':
-          description: Configuration updated
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Config'
-        '403':
-          description: Unauthorized
-
+                type: object
+                additionalProperties: true
+                title: Response Create Change Point Api V1 Changepoints Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - audit
+      summary: List Change Points
+      description: Recent change points (newest first) — used by the pages to mark
+        real changes.
+      operationId: list_change_points_api_v1_changepoints_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Change Points Api V1 Changepoints Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/settings:
+    get:
+      tags:
+      - settings
+      summary: Get Settings
+      operationId: get_settings_api_v1_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Get Settings Api V1 Settings Get
+    patch:
+      tags:
+      - settings
+      summary: Patch Settings
+      operationId: patch_settings_api_v1_settings_patch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsPatch'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Patch Settings Api V1 Settings Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /health:
+    get:
+      summary: Health
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Health Get
 components:
   schemas:
-    Scenario:
-      type: object
+    ChangePointIn:
       properties:
-        id:
-          type: integer
-        tag:
+        action:
           type: string
-          example: "Prevent shortage through internal transfer"
-        drug:
+          title: Action
+        source:
           type: string
-          example: "Vancomycin IV 1g"
-        narrative:
+          title: Source
+          default: mcp
+        target:
           type: string
-        approver_role:
+          title: Target
+          default: ''
+        detail:
           type: string
-          enum: [Manager, Pharmacist]
-        correlation_id:
-          type: string
+          title: Detail
+          default: ''
+      type: object
       required:
-        - id
-        - tag
-        - drug
-        - correlation_id
-
-    ScenarioDetail:
-      allOf:
-        - $ref: '#/components/schemas/Scenario'
-        - type: object
-          properties:
-            current_workflow_id:
-              type: string
-              format: uuid
-              nullable: true
-            current_stage:
-              type: string
-              enum: [detected, agents_consulted, options_ranked, pending_approval, approved, task_created, in_progress, completed, rejected, escalated]
-              nullable: true
-
-    WorkflowState:
-      type: object
+      - action
+      title: ChangePointIn
+    Decision:
       properties:
-        workflow_id:
+        issue_id:
           type: string
-          format: uuid
-        correlation_id:
-          type: string
+          title: Issue Id
         drug:
           type: string
-        stage:
+          title: Drug
+          default: ''
+        location:
           type: string
-          enum: [detected, agents_consulted, options_ranked, pending_approval, approved, task_created, in_progress, completed, rejected, escalated]
-        version:
-          type: integer
-        detected_at:
+          title: Location
+          default: ''
+        option_type:
           type: string
-          format: date-time
-        options_ranked_at:
-          type: string
-          format: date-time
-          nullable: true
-        pending_approval_at:
-          type: string
-          format: date-time
-          nullable: true
-        approved_at:
-          type: string
-          format: date-time
-          nullable: true
-        
-        # Full recommendation payload (only if stage >= options_ranked)
-        recommendation:
-          $ref: '#/components/schemas/Recommendation'
-          nullable: true
-        
-        # Only if stage == pending_approval or later
-        approval_decision:
-          $ref: '#/components/schemas/ApprovalDecision'
-          nullable: true
-        
-        # Only if stage == task_created or later
-        task_id:
-          type: string
-          format: uuid
-          nullable: true
-
-    Recommendation:
-      type: object
-      properties:
-        recommendation_id:
-          type: string
-          format: uuid
-        version:
-          type: integer
-        drug:
-          type: string
-        problem_type:
-          type: string
-          enum: [shortage, excess, expiration, supplier_delay]
-        
-        ranked_options:
-          type: array
-          items:
-            $ref: '#/components/schemas/RankedOption'
-        
-        rejected_options:
-          type: array
-          items:
-            $ref: '#/components/schemas/RejectedOption'
-        
-        # Scoring model metadata
-        scoring_weights:
-          type: object
-          properties:
-            availability:
-              type: number
-              example: 0.40
-            lead_time:
-              type: number
-              example: 0.25
-            cost:
-              type: number
-              example: 0.20
-            waste_reduction:
-              type: number
-              example: 0.15
-        
-        # Full input snapshot used for decision
-        input_snapshot:
-          type: object
-          description: Inventory, supplier, delivery state at decision time
-          additionalProperties: true
-        
-        policy_version:
-          type: string
-          example: "policy v1.3"
-        
-        generated_at:
-          type: string
-          format: date-time
-
-    RankedOption:
-      type: object
-      properties:
-        option_id:
-          type: string
-          enum: [transfer, procurement]
-        label:
-          type: string
-          example: "Internal transfer: Central Warehouse → Ward A (300 units)"
-        feasible:
-          type: boolean
-        
-        # Score components (only if feasible)
-        score:
-          type: integer
-          minimum: 0
-          maximum: 100
-          nullable: true
-        
-        availability_protection:
-          type: number
-          minimum: 0
-          maximum: 1
-          nullable: true
-        
-        lead_time_margin_days:
-          type: integer
-          nullable: true
-        
-        cost_usd:
-          type: number
-          nullable: true
-        
-        waste_avoided_units:
-          type: integer
-          nullable: true
-        
-        agent_responsible:
-          type: string
-          example: "Inventory + Delivery"
-
-    RejectedOption:
-      type: object
-      properties:
-        option_id:
-          type: string
-        label:
-          type: string
-        reason:
-          type: string
-          example: "Supplier ETA (5 days) exceeds projected stockout date (3 days)."
-
-    ApprovalDecision:
-      type: object
-      properties:
-        decision_id:
-          type: string
-          format: uuid
-        workflow_id:
-          type: string
-          format: uuid
-        recommendation_id:
-          type: string
-          format: uuid
-        recommendation_version:
-          type: integer
-        
-        approver_role:
-          type: string
-          enum: [Manager, Pharmacist, Clinician]
-        approver_id:
-          type: string
-          nullable: true
-        
+          title: Option Type
+          default: ''
         decision:
           type: string
-          enum: [approved, rejected, escalated]
-        
+          enum:
+          - approved
+          - rejected
+          title: Decision
         reason:
           type: string
-          nullable: true
-          description: Required for reject. Optional for escalate.
-        
-        policy_version:
+          title: Reason
+          default: ''
+        approver_role:
           type: string
-        
-        decided_at:
-          type: string
-          format: date-time
-
-    Task:
+          title: Approver Role
+          default: Manager
       type: object
+      required:
+      - issue_id
+      - decision
+      title: Decision
+    FeatureSpecIn:
       properties:
-        task_id:
+        type:
           type: string
-          format: uuid
-        correlation_id:
+          title: Type
+        lag:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lag
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+        column:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Column
+        encoder:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Encoder
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        formula:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Formula
+      type: object
+      required:
+      - type
+      title: FeatureSpecIn
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    PredictIn:
+      properties:
+        series:
+          items:
+            type: number
+          type: array
+          title: Series
+          default: []
+        steps:
+          type: integer
+          title: Steps
+          default: 14
+        model:
           type: string
-          description: Idempotency key for duplicate detection
-        workflow_id:
-          type: string
-          format: uuid
-        
+          title: Model
+          default: xgboost
+        lags:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lags
+      type: object
+      title: PredictIn
+    SettingsPatch:
+      properties:
+        values:
+          additionalProperties:
+            type: number
+          type: object
+          title: Values
+          default: {}
+      type: object
+      title: SettingsPatch
+    StockPut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/StockRow'
+          type: array
+          title: Items
+          default: []
+      type: object
+      title: StockPut
+      description: Full-sheet replace payload — used on import.
+    StockRow:
+      properties:
         drug:
           type: string
-        task_type:
+          title: Drug
+          default: ''
+        location:
           type: string
-          enum: [transfer, procurement]
-        
-        status:
+          title: Location
+          default: ''
+        on_hand:
+          anyOf:
+          - type: number
+          - type: string
+          - type: 'null'
+          title: On Hand
+        unit:
           type: string
-          enum: [requested, assigned, accepted, in_progress, delayed, completed, failed, escalated]
-        
-        # Delivery/transfer specifics
-        source_location:
+          title: Unit
+          default: ''
+        expiry_date:
           type: string
-          nullable: true
-        destination_location:
+          title: Expiry Date
+          default: ''
+        avg_daily_use:
+          anyOf:
+          - type: number
+          - type: string
+          - type: 'null'
+          title: Avg Daily Use
+        supplier:
           type: string
-          nullable: true
-        quantity:
+          title: Supplier
+          default: ''
+        last_delivery:
+          type: string
+          title: Last Delivery
+          default: ''
+      type: object
+      title: StockRow
+      description: One inventory row as the grid sends it (numbers may arrive as strings).
+    StockRowUpdate:
+      properties:
+        drug:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Drug
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+        on_hand:
+          anyOf:
+          - type: number
+          - type: string
+          - type: 'null'
+          title: On Hand
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+        expiry_date:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expiry Date
+        avg_daily_use:
+          anyOf:
+          - type: number
+          - type: string
+          - type: 'null'
+          title: Avg Daily Use
+        supplier:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier
+        last_delivery:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Delivery
+      type: object
+      title: StockRowUpdate
+      description: Partial update for a single cell/row edit — only provided fields
+        change.
+    TrainIn:
+      properties:
+        drug:
+          type: string
+          title: Drug
+        steps:
           type: integer
-        estimated_delivery_hours:
-          type: integer
-          nullable: true
-        
-        # Procurement specifics
-        supplier_name:
+          title: Steps
+          default: 14
+        model:
           type: string
-          nullable: true
-        estimated_arrival_date:
+          title: Model
+          default: xgboost
+        normalization:
           type: string
-          format: date-time
-          nullable: true
-        
-        # Progress
-        steps_completed:
-          type: array
+          title: Normalization
+          default: standard
+        features:
           items:
-            type: string
-          example: [requested, assigned, accepted]
-        
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        completed_at:
-          type: string
-          format: date-time
-          nullable: true
-
-    KPIs:
+            $ref: '#/components/schemas/FeatureSpecIn'
+          type: array
+          title: Features
+          default: []
       type: object
+      required:
+      - drug
+      title: TrainIn
+    ValidationError:
       properties:
-        timestamp:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
           type: string
-          format: date-time
-        time_window_days:
-          type: integer
-        
-        problems_detected:
-          type: integer
-        recommendations_generated:
-          type: integer
-        recommendation_acceptance_rate_pct:
-          type: number
-          format: double
-        
-        false_positive_rate_pct:
-          type: number
-          format: double
-          description: Rejections with reason='wrong calculation'
-        
-        latency_detection_to_recommendation_sec:
-          type: object
-          properties:
-            median:
-              type: number
-            p95:
-              type: number
-        
-        latency_recommendation_to_approval_sec:
-          type: object
-          properties:
-            median:
-              type: number
-            p95:
-              type: number
-        
-        latency_approval_to_task_creation_sec:
-          type: number
-        
-        latency_task_completion_sec:
-          type: object
-          properties:
-            median:
-              type: number
-            p95:
-              type: number
-        
-        task_completion_rate_pct:
-          type: number
-          format: double
-        
-        manual_coordination_steps_avoided:
-          type: integer
-        
-        estimated_operations_minutes_saved:
-          type: number
-          description: manual_coordination_steps_avoided × minutes_per_step config
-        
-        medication_availability_rate_pct:
-          type: number
-          format: double
-        
-        potential_stockouts_addressed:
-          type: integer
-        
-        simulated_stockouts_prevented:
-          type: integer
-        
-        expiration_risk_quantity_redistributed:
-          type: integer
-        
-        transfer_vs_procurement_ratio:
-          type: number
-          format: double
-        
-        invalid_recommendations_blocked:
-          type: integer
-
-    Config:
+          title: Message
+        type:
+          type: string
+          title: Error Type
       type: object
-      properties:
-        safety_stock_multiplier:
-          type: number
-          example: 1.2
-        days_of_supply_minimum:
-          type: integer
-          example: 3
-        expiration_risk_horizon_days:
-          type: integer
-          example: 14
-        lead_time_buffer_days:
-          type: integer
-          example: 1
-        
-        scoring_weights:
-          type: object
-          properties:
-            availability:
-              type: number
-            lead_time:
-              type: number
-            cost:
-              type: number
-            waste_reduction:
-              type: number
-        
-        minimum_feasibility_score:
-          type: integer
-          example: 50
-        
-        retry_limit_delivery:
-          type: integer
-          example: 3
-        
-        minutes_per_manual_coordination_step:
-          type: integer
-          example: 15
-        
-        updated_at:
-          type: string
-          format: date-time
-
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: Optional JWT token for API authentication (future)
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
