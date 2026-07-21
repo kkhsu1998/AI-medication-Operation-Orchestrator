@@ -44,6 +44,8 @@ interface Props {
    * and the pointer position. The grid already calls preventDefault().
    */
   onContextMenu?: (row: Row, x: number, y: number) => void
+  /** click a data column header (e.g. to configure that column as a feature) */
+  onHeaderClick?: (colKey: string) => void
 }
 
 const ROWNUM_KEY = '__rn__'
@@ -74,6 +76,7 @@ export default function DataGrid({
   getRowId,
   onCellEdited,
   onContextMenu,
+  onHeaderClick,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const selected = useRef<{ rowIdx: number; colKey: string }>({ rowIdx: 0, colKey: columns[0]?.key })
@@ -126,9 +129,22 @@ export default function DataGrid({
       minWidth: 70,
       renderEditCell: textEditor,
       cellClass: rowClass ? (row: Row) => rowClass(row) : undefined,
+      // Clickable header ("column tab") so callers can configure a column.
+      renderHeaderCell: onHeaderClick
+        ? ({ column }) => (
+            <div
+              onClick={() => onHeaderClick(column.key)}
+              style={{ cursor: 'pointer', width: '100%', height: '100%', display: 'flex', alignItems: 'center', gap: 4 }}
+              title="Configure column"
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{column.name}</span>
+              <span style={{ opacity: 0.55, fontSize: 9 }}>▾</span>
+            </div>
+          )
+        : undefined,
     }))
     return [gutter, ...data]
-  }, [columns, rowClass])
+  }, [columns, rowClass, onHeaderClick])
 
   const handleImport = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
