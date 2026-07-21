@@ -54,9 +54,8 @@ const MODEL_LABEL: Record<string, string> = {
 
 type Mode = 'predict' | 'lattice'
 
+// Non-lag features; lags are a single contiguous range "Lag N-1 … N-n" (see lagN).
 const DEFAULT_LATTICE: FeatureSpec[] = [
-  { type: 'lag', lag: 1 },
-  { type: 'lag', lag: 7 },
   { type: 'calendar', kind: 'dow' },
   { type: 'categorical', column: 'location', encoder: 'onehot' },
 ]
@@ -81,8 +80,8 @@ export default function Forecast() {
   const [normalization, setNormalization] = useState('standard')
   const [featureSpecs, setFeatureSpecs] = useState<FeatureSpec[]>(DEFAULT_LATTICE)
   const [trained, setTrained] = useState<TrainResult | null>(null)
-  // add-feature control inputs
-  const [newLag, setNewLag] = useState(1)
+  // lag range "Lag N-1 … N-n" (expands to lags 1..n) + add-feature control inputs
+  const [lagN, setLagN] = useState(7)
   const [newCalendar, setNewCalendar] = useState('')
   const [derivedName, setDerivedName] = useState('')
   const [derivedFormula, setDerivedFormula] = useState('')
@@ -116,7 +115,6 @@ export default function Forecast() {
       .then((o) => {
         setOptions(o)
         setNewCalendar(o.calendar[0] ?? '')
-        setNewLag(o.suggested_lags[0] ?? 1)
         if (o.normalizers.length && !o.normalizers.includes(normalization)) setNormalization(o.normalizers[0])
       })
       .catch(() => { /* options are optional; lattice mode will show a hint */ })
@@ -160,7 +158,10 @@ export default function Forecast() {
     if (isAll) return
     setBusy(true)
     setError(null)
-    trainForecast(selected, steps, model, normalization, featureSpecs)
+    // Expand the lag range N-1 … N-n into individual lag features 1..n.
+    const lagFeatures: FeatureSpec[] = Array.from({ length: Math.max(0, lagN) }, (_, i) => ({ type: 'lag', lag: i + 1 }))
+    const features = [...lagFeatures, ...featureSpecs]
+    trainForecast(selected, steps, model, normalization, features)
       .then((res) => { setTrained(res); setError(null) })
       .catch((e) => { setTrained(null); setError(`Train failed: ${e instanceof Error ? e.message : String(e)}`) })
       .finally(() => setBusy(false))
@@ -317,10 +318,10 @@ export default function Forecast() {
             <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>STEPS</span>
             <input type="number" min={1} max={365} value={steps} onChange={(e) => setSteps(Math.max(1, Math.min(365, Number(e.target.value) || 1)))}
               style={{ width: 64, background: C.bg, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px', fontSize: 12 }} />
-            <button onClick={runTrain} disabled={busy || isAll || featureSpecs.length === 0} title={isAll ? 'Pick a single medication for the feature lattice' : undefined} style={{
+            <button onClick={runTrain} disabled={busy || isAll} title={isAll ? 'Pick a single medication for the feature lattice' : undefined} style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, background: C.teal, color: '#0F141B', border: 'none',
               borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 700, cursor: busy ? 'wait' : (isAll ? 'not-allowed' : 'pointer'),
-              opacity: (isAll || featureSpecs.length === 0) ? 0.5 : 1,
+              opacity: isAll ? 0.5 : 1,
             }}><TrendingUp size={14} /> {busy ? 'Training…' : 'Train & Forecast'}</button>
             {isAll && <span style={{ fontSize: 11, color: C.amber }}>Pick a single medication for the feature lattice</span>}
             {trained && (
@@ -399,37 +400,55 @@ export default function Forecast() {
               />
             ) : (
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden' }}>
-                {/* Add-feature toolbar */}
-                <div style={{ borderBottom: `1px solid ${C.border}`, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Table header */}
+                <div style={{ display: 'grid', gridTemplateColumns: '92px 1fr 26px', background: C.panelAlt, borderBottom: `1px solid ${C.border}`, padding: '8px 10px' }} className="mono">
+                  <span style={{ fontSize: 9.5, color: C.muted2 }}>TYPE</span>
+                  <span style={{ fontSize: 9.5, color: C.muted2 }}>FEATURE — {1 + featureSpecs.length} rows</span>
+                  <span />
+                </div>
+
+                {/* Feature rows (the lattice as a table) */}
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                  {/* Lag range row: Lag N-1 … N-n */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '92px 1fr 26px', alignItems: 'center', padding: '7px 10px', borderBottom: `1px solid ${C.border}` }}>
+                    <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>LAG</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, flexWrap: 'wrap' }}>
+                      <span className="mono" style={{ color: C.text }}>Lag&nbsp;N-1&nbsp;…&nbsp;N-</span>
+                      <input type="number" min={1} max={90} value={lagN}
+                        onChange={(e) => setLagN(Math.max(1, Math.min(90, Number(e.target.value) || 1)))}
+                        style={{ ...selStyle, width: 54 }} />
+                      <span className="mono" style={{ color: C.muted2, fontSize: 10.5 }}>→ lag_1 … lag_{lagN}</span>
+                    </span>
+                    <span />
+                  </div>
+
+                  {featureSpecs.map((f, i) => {
+                    const fl = featureLabel(f)
+                    return (
+                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '92px 1fr 26px', alignItems: 'center', padding: '7px 10px', borderBottom: `1px solid ${C.border}` }}>
+                        <span className="mono" style={{ fontSize: 9.5, color: C.muted2, textTransform: 'uppercase' }}>{fl.type}</span>
+                        <span className="mono" style={{ fontSize: 12.5, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fl.params}</span>
+                        <button onClick={() => removeFeature(i)} title="Remove" style={{ background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', display: 'inline-flex', padding: 2 }}><X size={13} /></button>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Add-feature footer — controls live inside the table */}
+                <div style={{ borderTop: `1px solid ${C.border}`, background: C.panelAlt, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>ADD FEATURE</div>
-                  {/* Lag */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11.5, color: C.muted, width: 74 }}>Lag</span>
-                    <input type="number" min={1} max={90} value={newLag}
-                      onChange={(e) => setNewLag(Math.max(1, Math.min(90, Number(e.target.value) || 1)))}
-                      style={{ ...selStyle, width: 60 }} />
-                    <button onClick={() => addFeature({ type: 'lag', lag: newLag })} style={smallBtn()}><Plus size={12} /> lag_{newLag}</button>
-                    {options && options.suggested_lags.length > 0 && (
-                      <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>suggested: {options.suggested_lags.join(', ')}</span>
-                    )}
-                  </div>
-                  {/* Calendar */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11.5, color: C.muted, width: 74 }}>Calendar</span>
-                    <select value={newCalendar} onChange={(e) => setNewCalendar(e.target.value)} style={{ ...selStyle, minWidth: 90 }}>
-                      {(options?.calendar ?? ['dow', 'month', 'day']).map((k) => <option key={k} value={k}>{k}</option>)}
+                    <select value={newCalendar} onChange={(e) => setNewCalendar(e.target.value)} style={{ ...selStyle, minWidth: 78 }}>
+                      {(options?.calendar ?? ['dow', 'month', 'day']).map((k) => <option key={k} value={k}>cal_{k}</option>)}
                     </select>
-                    <button onClick={() => newCalendar && addFeature({ type: 'calendar', kind: newCalendar })} style={smallBtn()}><Plus size={12} /> cal_{newCalendar}</button>
+                    <button onClick={() => newCalendar && addFeature({ type: 'calendar', kind: newCalendar })} style={smallBtn()}><Plus size={12} /> calendar</button>
+                    {(options?.categoricals ?? [{ column: 'location', encoders: ['onehot', 'ordinal'] }]).map((cat) => (
+                      <CategoricalAdder key={cat.column} column={cat.column} encoders={cat.encoders} selStyle={selStyle} smallBtn={smallBtn} onAdd={addFeature} />
+                    ))}
                   </div>
-                  {/* Categorical (per column) */}
-                  {(options?.categoricals ?? [{ column: 'location', encoders: ['onehot', 'ordinal'] }]).map((cat) => (
-                    <CategoricalAdder key={cat.column} column={cat.column} encoders={cat.encoders} selStyle={selStyle} smallBtn={smallBtn} onAdd={addFeature} />
-                  ))}
-                  {/* Derived column */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11.5, color: C.muted, width: 74 }}>Derived</span>
-                    <input placeholder="name" value={derivedName} onChange={(e) => setDerivedName(e.target.value)} style={{ ...selStyle, width: 90 }} />
-                    <input placeholder="lag_1 * 0.5 + lag_7" value={derivedFormula} onChange={(e) => setDerivedFormula(e.target.value)} style={{ ...selStyle, flex: 1, minWidth: 140 }} />
+                    <input placeholder="derived name" value={derivedName} onChange={(e) => setDerivedName(e.target.value)} style={{ ...selStyle, width: 104 }} />
+                    <input placeholder="lag_1 * 0.5 + lag_7" value={derivedFormula} onChange={(e) => setDerivedFormula(e.target.value)} style={{ ...selStyle, flex: 1, minWidth: 130 }} />
                     <button
                       onClick={() => {
                         if (!derivedName.trim() || !derivedFormula.trim()) return
@@ -437,32 +456,9 @@ export default function Forecast() {
                         setDerivedName(''); setDerivedFormula('')
                       }}
                       style={smallBtn()}
-                    ><Plus size={12} /> add</button>
+                    ><Plus size={12} /> derived</button>
                   </div>
-                  <div className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>
-                    Formulas reference other feature columns (lag_1, lag_7, cal_dow, …).
-                  </div>
-                </div>
-
-                {/* Feature list */}
-                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 10 }}>
-                  <div className="mono" style={{ fontSize: 9.5, color: C.muted2, marginBottom: 8 }}>FEATURE LATTICE ({featureSpecs.length})</div>
-                  {featureSpecs.length === 0 && <div style={{ fontSize: 12, color: C.muted2 }}>No features — add at least one above.</div>}
-                  {featureSpecs.map((f, i) => {
-                    const fl = featureLabel(f)
-                    return (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: 8, background: C.panelAlt, border: `1px solid ${C.border}`,
-                        borderRadius: 6, padding: '6px 8px', marginBottom: 6,
-                      }}>
-                        <span className="mono" style={{ fontSize: 9.5, color: C.muted2, width: 78, flexShrink: 0, textTransform: 'uppercase' }}>{fl.type}</span>
-                        <span className="mono" style={{ fontSize: 12, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{fl.params}</span>
-                        <button onClick={() => removeFeature(i)} title="Remove" style={{
-                          background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', display: 'inline-flex', padding: 2,
-                        }}><X size={14} /></button>
-                      </div>
-                    )
-                  })}
+                  <div className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>Formulas reference feature columns (lag_1, lag_7, cal_dow, …).</div>
                 </div>
               </div>
             )}
