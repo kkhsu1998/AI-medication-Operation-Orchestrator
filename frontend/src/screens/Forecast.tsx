@@ -233,12 +233,17 @@ export default function Forecast() {
   const calendarKinds = options?.calendar ?? SAMPLE_KINDS
 
   // ---- Chart data ----
-  const chartData = trained
-    ? [
-        ...trained.history.map((p, i) => ({ date: label(p.date), Actual: p.value, Forecast: i === trained.history.length - 1 ? p.value : null })),
-        ...trained.predictions.map((p) => ({ date: label(p.date), Actual: null, Forecast: p.value })),
-      ]
-    : base.map((p) => ({ date: label(p.date), Actual: p.value, Forecast: null as number | null }))
+  // Always show the FULL history (base); when trained, append the forecast to
+  // the end (the last history point also seeds Forecast so the red line joins).
+  const chartData = useMemo(() => {
+    const hist = base.map((p, i) => ({
+      date: label(p.date),
+      Actual: p.value,
+      Forecast: (trained && i === base.length - 1) ? p.value : (null as number | null),
+    }))
+    if (!trained) return hist
+    return [...hist, ...trained.predictions.map((p) => ({ date: label(p.date), Actual: null as number | null, Forecast: p.value }))]
+  }, [base, trained])
 
   const railItem = (name: string, active: boolean, onClick: () => void, sub?: string) => (
     <button key={name} onClick={onClick} style={{
