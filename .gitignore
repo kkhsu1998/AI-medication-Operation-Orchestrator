@@ -14,3 +14,5 @@ build/
 .coverage
 htmlcov/
 *.egg-info/
+*.db
+*.sqlite3

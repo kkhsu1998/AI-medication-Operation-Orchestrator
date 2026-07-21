@@ -15,9 +15,32 @@ constraints. See `docs/adr/` for architecture decisions.
 
 ## Status
 
-Repository scaffold only. No application code has been written yet.
-Following the implementation order defined in the design doc
-(Step 1: repository setup — in progress; Step 2: ADR — in progress).
+Prototype in progress. Implemented so far: decision engine (19 functions),
+config cache, scenario runner, demand forecasting (RandomForest / XGBoost),
+and a React + Vite frontend (Stock + Forecast + Orchestrator screens).
+
+## Running
+
+Backend (tests):
+
+    cd backend
+    pip install -e '.[dev]'
+    pytest
+
+Frontend (dev server on http://localhost:5173, proxies /api → backend:8000):
+
+    cd frontend
+    npm install
+    npm run dev        # or: npm start
+
+## Forecasting
+
+`app.forecasting.forecast_demand(history, horizon_days=14, model_type="random_forest")`
+turns a daily consumption series for one (medication, location) into a
+multi-step p10/p50/p90 forecast using tree-ensemble quantile regression
+(`random_forest` or `xgboost`), with confidence scoring (holdout MAPE, data
+sufficiency, series stability). Short series fall back to a seasonal-naive
+baseline. See `backend/tests/test_forecasting.py`.
 
 ## Layout
 

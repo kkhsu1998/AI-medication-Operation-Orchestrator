@@ -1,0 +1,108 @@
+:root {
+  --bg: #0f141b;
+  --panel: #171f29;
+  --panel-alt: #1d2733;
+  --border: #28323f;
+  --text: #edeff2;
+  --muted: #8a94a6;
+  --teal: #4fa88a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.disp {
+  font-family: 'Space Grotesk', sans-serif;
+}
+.mono {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+button {
+  font-family: inherit;
+}
+button:hover {
+  filter: brightness(1.12);
+}
+
+/* ---- react-data-grid: Excel-like dark theme ---- */
+.rdg {
+  --rdg-color: var(--text);
+  --rdg-background-color: var(--panel);
+  --rdg-header-background-color: var(--panel-alt);
+  --rdg-row-hover-background-color: #1b2430;
+  --rdg-border-color: var(--border);
+  --rdg-selection-color: var(--teal);
+  --rdg-font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  block-size: 100%;
+}
+
+/* Uniform gridlines on every cell — the Excel worksheet look. */
+.rdg-cell {
+  border-inline-end: 1px solid var(--border);
+  border-block-end: 1px solid var(--border);
+  padding-inline: 8px;
+}
+
+/* Column headers: taller, bold, monospace, sticky. */
+.rdg-header-row {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  font-weight: 600;
+}
+.rdg-header-row .rdg-cell {
+  background: var(--panel-alt);
+  color: var(--muted);
+  border-block-end: 2px solid var(--border);
+}
+
+/* Row-number gutter — grey, centered, non-editable, like Excel's row headers. */
+.rdg-rownum {
+  background: var(--panel-alt);
+  color: var(--muted);
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding-inline: 0;
+  cursor: default;
+}
+.rdg-rownum-header {
+  background: var(--panel-alt);
+}
+
+/* Selected cell: a crisp Excel-style box. */
+.rdg-cell[aria-selected='true'] {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+
+/* Drop a subtle shadow after the frozen columns so they read as pinned. */
+.rdg-cell.rdg-cell-frozen-last {
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
+}
+
+/* Forecast (predicted) rows marked red. */
+.rdg-forecast {
+  color: #d9524b;
+  background: rgba(217, 82, 75, 0.08);
+  font-weight: 600;
+}

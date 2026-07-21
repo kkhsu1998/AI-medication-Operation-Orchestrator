@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "medops": {
+      "command": "python",
+      "args": ["backend/mcp_server.py"],
+      "env": {
+        "MEDOPS_API": "http://localhost:8000"
+      }
+    }
+  }
+}

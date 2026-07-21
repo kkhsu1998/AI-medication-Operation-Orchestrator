@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Emitted by `tsc -b` for the composite node config — not source.
+vite.config.js
+vite.config.d.ts

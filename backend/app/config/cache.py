@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
@@ -142,7 +142,11 @@ class CachedConfigService:
         """
         with self._lock:
             self._cache = {entry.key: entry for entry in entries}
-            self._cache_loaded_at = datetime.utcnow()
+            # Timezone-aware UTC: a naive datetime.utcnow().timestamp() is
+            # (incorrectly) interpreted as local time, so it disagreed with
+            # time.time() by the UTC offset and made the cache look expired
+            # (or immortal) on any non-UTC host.
+            self._cache_loaded_at = datetime.now(timezone.utc)
 
     def is_expired(self) -> bool:
         """Check whether the cache TTL has expired."""
