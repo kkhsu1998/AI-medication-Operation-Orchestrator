@@ -1,0 +1,146 @@
+version: '3.9'
+
+services:
+  # PostgreSQL database - all persistent data
+  postgres:
+    image: postgres:15-alpine
+    container_name: medops-postgres
+    environment:
+      POSTGRES_DB: medops
+      POSTGRES_USER: medops
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-medops-dev-only}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_database.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - medops-network
+
+  # Python FastAPI backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: medops-backend
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://medops:medops-dev-only@postgres:5432/medops
+      # API Configuration
+      API_PORT: 8000
+      API_HOST: 0.0.0.0
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Frontend CORS
+      FRONTEND_URL: http://localhost:3000
+      # Optional: LLM provider (for explanation generation, if used)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Mount source code for development hot-reload
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+    command: |
+      sh -c "
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    networks:
+      - medops-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # React frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: http://localhost:8000
+    container_name: medops-frontend
+    environment:
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
+      REACT_APP_ENV: ${REACT_APP_ENV:-development}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      # Hot-reload during development
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    command: npm start
+    networks:
+      - medops-network
+
+  # Optional: Adminer for database GUI (for inspection during development)
+  adminer:
+    image: adminer:latest
+    container_name: medops-adminer
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - medops-network
+
+  # Optional: Redis for caching/session (if you add it later)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: medops-redis
+  #   ports:
+  #     - "6379:6379"
+  #   networks:
+  #     - medops-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  medops-network:
+    driver: bridge
+
+# Usage:
+#
+# 1. Start all services:
+#    docker-compose up --build
+#
+# 2. View logs:
+#    docker-compose logs -f backend
+#    docker-compose logs -f frontend
+#
+# 3. Stop services:
+#    docker-compose down
+#
+# 4. Clean everything (including database):
+#    docker-compose down -v
+#
+# 5. Connect to database:
+#    psql postgresql://medops:medops-dev-only@localhost:5432/medops
+#
+# 6. Access services:
+#    - Frontend: http://localhost:3000
+#    - Backend API: http://localhost:8000
+#    - API docs: http://localhost:8000/docs
+#    - Database GUI: http://localhost:8080
+#
+# Environment variables (.env file):
+#    DB_PASSWORD=your-secure-password
+#    LOG_LEVEL=DEBUG
+#    ANTHROPIC_API_KEY=your-key-here
+#    REACT_APP_ENV=development
