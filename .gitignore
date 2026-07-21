@@ -16,3 +16,6 @@ htmlcov/
 *.egg-info/
 *.db
 *.sqlite3
+
+# Large generated synthetic export
+data/synthetic/hl7_inventory.ndjson
