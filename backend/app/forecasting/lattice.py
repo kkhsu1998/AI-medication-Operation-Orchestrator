@@ -17,6 +17,7 @@ lags), then summed to a daily total to match the chart.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, timedelta
 from typing import Any
 
@@ -24,6 +25,14 @@ import numpy as np
 import pandas as pd
 
 NORMALIZERS = ("none", "standard", "minmax")
+ENCODERS = ("onehot", "ordinal", "embedding")
+
+
+def _embed_vector(category: str, n_dims: int) -> np.ndarray:
+    """Deterministic dense embedding for a category: an n_dims vector drawn from
+    an RNG seeded by the category name's hash. Stable across runs/processes."""
+    seed = int.from_bytes(hashlib.md5(category.encode()).digest()[:4], "little")
+    return np.random.default_rng(seed).standard_normal(n_dims)
 
 
 def _scaler(kind: str):
@@ -47,6 +56,7 @@ class FeatureSpec:
         self.kind = d.get("kind") or "dow"            # calendar
         self.column = d.get("column") or "location"   # categorical
         self.encoder = d.get("encoder") or "onehot"
+        self.n_dims = int(d.get("n_dims") or 4)       # embedding dimensionality
         self.name = d.get("name") or ""               # derived
         self.formula = d.get("formula") or ""
 
@@ -73,6 +83,7 @@ def build_matrix(df: pd.DataFrame, specs: list[FeatureSpec]):
     numeric_cols: list[str] = []
     onehot_cols: list[str] = []
     ordinal_map: dict[str, int] = {}
+    emb_map: dict[str, np.ndarray] = {}
     derived: list[FeatureSpec] = []
     lag_ints: list[int] = []
     cal_kinds: list[str] = []
@@ -96,6 +107,17 @@ def build_matrix(df: pd.DataFrame, specs: list[FeatureSpec]):
                 df["loc_ord"] = df["location"].map(ordinal_map)
                 if "loc_ord" not in numeric_cols:
                     numeric_cols.append("loc_ord")
+            elif s.encoder == "embedding":
+                # Dense n_dims embedding per category — compact for
+                # high-cardinality categoricals where one-hot would explode.
+                n_dims = max(1, min(32, s.n_dims))
+                cats = sorted(df["location"].unique())
+                emb_map.update({c: _embed_vector(c, n_dims) for c in cats})
+                for k in range(n_dims):
+                    col = f"loc_emb_{k}"
+                    df[col] = df["location"].map(lambda c, k=k: float(emb_map[c][k]))
+                    if col not in numeric_cols:
+                        numeric_cols.append(col)
             else:  # onehot
                 dummies = pd.get_dummies(df["location"], prefix="loc")
                 for c in dummies.columns:
@@ -124,6 +146,7 @@ def build_matrix(df: pd.DataFrame, specs: list[FeatureSpec]):
     df = df.dropna(subset=numeric_cols).reset_index(drop=True)
     meta = {
         "ordinal_map": ordinal_map,
+        "emb_map": emb_map,
         "derived": [(c.name, c.formula) for c in derived],
         "onehot_cols": onehot_cols,
         "lags": sorted(lag_ints),
@@ -191,6 +214,11 @@ def train_and_forecast(
                 feats[f"cal_{kind}"] = (fday.dayofweek if kind == "dow" else fday.month if kind == "month" else fday.day)
             if "loc_ord" in numeric_cols:
                 feats["loc_ord"] = ordinal_map.get(loc, 0)
+            if meta["emb_map"]:
+                vec = meta["emb_map"].get(loc)
+                if vec is not None:
+                    for j in range(len(vec)):
+                        feats[f"loc_emb_{j}"] = float(vec[j])
             row = pd.DataFrame([feats])
             for name, formula in meta["derived"]:
                 try:

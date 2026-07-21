@@ -67,6 +67,7 @@ export interface FeatureSpec {
   kind?: string
   column?: string
   encoder?: string
+  n_dims?: number
   name?: string
   formula?: string
 }

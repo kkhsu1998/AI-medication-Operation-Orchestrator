@@ -56,6 +56,25 @@ def test_ordinal_encoder_adds_single_column():
     assert "loc_ord" in out["features_used"]
 
 
+def test_embedding_encoder_adds_n_dims_columns():
+    feats = BASE_FEATURES + [{"type": "categorical", "column": "location", "encoder": "embedding", "n_dims": 5}]
+    out = train_and_forecast(make_rows(n_locations=3), feats, model="xgboost", steps=5)
+    emb = [f for f in out["features_used"] if f.startswith("loc_emb_")]
+    assert len(emb) == 5
+    assert len(out["predictions"]) == 5
+
+
+def test_embedding_vectors_are_deterministic():
+    from app.forecasting.lattice import _embed_vector
+
+    import numpy as np
+    a = _embed_vector("Central Hospital", 6)
+    b = _embed_vector("Central Hospital", 6)
+    c = _embed_vector("Westside Clinic", 6)
+    assert np.allclose(a, b)          # same category -> same vector
+    assert not np.allclose(a, c)      # different categories differ
+
+
 def test_derived_formula_column_is_used():
     feats = BASE_FEATURES + [{"type": "derived", "name": "blend", "formula": "lag_1 * 0.5 + lag_7 * 0.5"}]
     out = train_and_forecast(make_rows(), feats, model="xgboost", steps=5)
