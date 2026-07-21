@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.consumption.models import Consumption
 from app.db import get_session
+from app.forecasting.lattice import NORMALIZERS, train_and_forecast
 from app.forecasting.simple import predict_series
 
 router = APIRouter(tags=["forecasting"])
@@ -73,3 +74,63 @@ def item(drug: str = Query(...), session: Session = Depends(get_session)) -> dic
     if not days:
         raise HTTPException(status_code=404, detail=f"no consumption history for {drug!r}")
     return {"drug": drug, "days": days, "values": values}
+
+
+# ============================================================================
+# Multivariate feature-lattice workbench
+# ============================================================================
+
+class FeatureSpecIn(BaseModel):
+    type: str                       # lag | calendar | categorical | derived
+    lag: int | None = None          # lag
+    kind: str | None = None         # calendar: dow | month | day
+    column: str | None = None       # categorical column
+    encoder: str | None = None      # onehot | ordinal
+    name: str | None = None         # derived column name
+    formula: str | None = None      # derived formula
+
+
+class TrainIn(BaseModel):
+    drug: str
+    steps: int = 14
+    model: str = "xgboost"          # xgboost | random_forest
+    normalization: str = "standard"  # none | standard | minmax
+    features: list[FeatureSpecIn] = []
+
+
+@router.get("/api/v1/forecast/features")
+def feature_options(session: Session = Depends(get_session)) -> dict:
+    """Describe the features/encoders available to the workbench."""
+    return {
+        "categoricals": [{"column": "location", "encoders": ["onehot", "ordinal"]}],
+        "calendar": ["dow", "month", "day"],
+        "suggested_lags": [1, 2, 3, 7, 14, 28],
+        "normalizers": list(NORMALIZERS),
+        "models": ["xgboost", "random_forest"],
+    }
+
+
+@router.post("/api/v1/forecast/train")
+def train(body: TrainIn, session: Session = Depends(get_session)) -> dict:
+    """Train a multivariate model on the chosen feature lattice and forecast."""
+    rows = (
+        session.query(Consumption.location, Consumption.day, Consumption.quantity)
+        .filter(Consumption.drug == body.drug)
+        .order_by(Consumption.location, Consumption.day)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"no consumption history for {body.drug!r}")
+    if body.normalization not in NORMALIZERS:
+        raise HTTPException(status_code=400, detail=f"normalization must be one of {NORMALIZERS}")
+    triples = [(loc, d, float(q)) for loc, d, q in rows]
+    try:
+        return train_and_forecast(
+            triples,
+            [f.model_dump() for f in body.features],
+            model=body.model,
+            normalization=body.normalization,
+            steps=max(1, min(120, body.steps)),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
