@@ -31,8 +31,10 @@ def _kind_filters(min_days: float):
     return {
         "stockout": StockItem.on_hand <= 0,
         "shortage": and_(StockItem.avg_daily_use > 0, StockItem.on_hand > 0, dos < min_days),
+        # No lower bound: stock that is ALREADY past its expiry date still holds
+        # units and must be flagged, not fall through as healthy.
         "expiration_risk": and_(StockItem.on_hand > 0, StockItem.expiry_date.isnot(None),
-                                StockItem.expiry_date >= today, StockItem.expiry_date <= horizon),
+                                StockItem.expiry_date <= horizon),
         "overstock": and_(StockItem.avg_daily_use > 0, dos > OVERSTOCK_DAYS),
     }
 
@@ -53,7 +55,7 @@ def _describe(item: StockItem, kind: str, min_days: float) -> str:
         return f"~{dos:.1f} days of supply (min {min_days:.0f})"
     if kind == "expiration_risk":
         days = (item.expiry_date - date.today()).days if item.expiry_date else 0
-        return f"Expires in {days} days"
+        return f"Expired {-days} days ago" if days < 0 else f"Expires in {days} days"
     return f"~{dos:.0f} days of supply (overstocked)"
 
 

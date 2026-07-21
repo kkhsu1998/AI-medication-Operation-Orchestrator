@@ -16,7 +16,7 @@ import { TrendingUp, RotateCcw, Plus, X } from 'lucide-react'
 import DataGrid from '../components/DataGrid/DataGrid'
 import type { GridColumn, Row } from '../components/DataGrid/xlsx'
 import {
-  getItem, getOverview, getFeatureOptions, getSample, trainForecast,
+  getItem, getOverview, getFeatureOptions, getSample, predictSeries, trainForecast,
   type ForecastOverview, type ModelType, type FeatureOptions, type FeatureSpec, type TrainResult,
   type SampleData,
 } from '../api/forecast'
@@ -28,7 +28,15 @@ const label = (iso: string) => {
   return `${MON_ABBR[Number(m) - 1]} ${Number(d)}`
 }
 const AGG = 'ALL'
-const MODEL_LABEL: Record<string, string> = { xgboost: 'XGBoost', random_forest: 'Random Forest' }
+const MODEL_LABEL: Record<string, string> = {
+  xgboost: 'XGBoost',
+  random_forest: 'Random Forest',
+  arima: 'ARIMA',
+  moving_average: 'Moving Avg',
+}
+// ARIMA / Moving Avg are univariate: they forecast the series directly and
+// ignore the feature grid (which only tree models consume).
+const UNIVARIATE: ModelType[] = ['arima', 'moving_average']
 
 interface Point { date: string; value: number }
 
@@ -148,14 +156,39 @@ export default function Forecast() {
     return g
   }, [overview])
 
-  const treeModels = options?.models?.length
-    ? options.models.filter((m) => m === 'xgboost' || m === 'random_forest')
-    : ['xgboost', 'random_forest']
+  const allModels: ModelType[] = ['xgboost', 'random_forest', 'arima', 'moving_average']
+  const isUnivariate = UNIVARIATE.includes(model)
 
   const runPredict = () => {
     if (isAll) return
     setBusy(true)
     setError(null)
+
+    if (isUnivariate) {
+      // ARIMA / Moving Avg: forecast the drug's daily series directly. The lag
+      // column's n doubles as the AR order / averaging window.
+      const series = base.map((p) => p.value)
+      const lagCol = featureCols.find((c) => c.role === 'lag' && c.include)
+      predictSeries(series, steps, model, lagCol?.lagN)
+        .then((preds) => {
+          let d = base[base.length - 1]?.date ?? new Date().toISOString().slice(0, 10)
+          const predictions = preds.map((v) => {
+            const dt = new Date(d + 'T00:00:00Z')
+            dt.setUTCDate(dt.getUTCDate() + 1)
+            d = dt.toISOString().slice(0, 10)
+            return { date: d, value: v }
+          })
+          setTrained({
+            model, normalization: 'none', steps, n_train_rows: series.length,
+            features_used: [], history: [], predictions,
+          })
+          setError(null)
+        })
+        .catch((e) => { setTrained(null); setError(`Predict failed: ${e instanceof Error ? e.message : String(e)}`) })
+        .finally(() => setBusy(false))
+      return
+    }
+
     const specs: FeatureSpec[] = []
     for (const c of featureCols) {
       if (!c.include) continue
@@ -286,15 +319,17 @@ export default function Forecast() {
         {/* Controls row */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px' }}>
           <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>MODEL</span>
-          {treeModels.map((m) => (
-            <button key={m} onClick={() => setModel(m as ModelType)} style={{
+          {allModels.map((m) => (
+            <button key={m} onClick={() => setModel(m)} style={{
               background: model === m ? C.teal : C.panelAlt, color: model === m ? '#0F141B' : C.text,
               border: `1px solid ${model === m ? C.teal : C.border}`, borderRadius: 6, padding: '6px 11px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
             }}>{MODEL_LABEL[m] ?? m}</button>
           ))}
           <div style={{ width: 1, height: 22, background: C.border, margin: '0 4px' }} />
           <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>NORM</span>
-          <select value={normalization} onChange={(e) => setNormalization(e.target.value)} style={selStyle}>
+          <select value={normalization} onChange={(e) => setNormalization(e.target.value)} disabled={isUnivariate}
+            title={isUnivariate ? 'Not used by ARIMA / Moving Avg' : undefined}
+            style={{ ...selStyle, opacity: isUnivariate ? 0.5 : 1 }}>
             {(options?.normalizers ?? ['none', 'standard', 'minmax']).map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
           <span className="mono" style={{ fontSize: 10, color: C.muted2 }}>DAYS</span>
@@ -359,7 +394,11 @@ export default function Forecast() {
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {/* Column adders */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, padding: '7px 10px' }}>
-                  <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>COLUMNS = FEATURES · click a header (▾) to configure</span>
+                  <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>
+                    {isUnivariate
+                      ? `COLUMNS = FEATURES · ${MODEL_LABEL[model]} is univariate — only the lag n is used`
+                      : 'COLUMNS = FEATURES · click a header (▾) to configure'}
+                  </span>
                   <div style={{ flex: 1 }} />
                   <span className="mono" style={{ fontSize: 9.5, color: C.muted2 }}>+ ADD</span>
                   <button onClick={addLagCol} style={smallBtn()}><Plus size={12} /> lag</button>
